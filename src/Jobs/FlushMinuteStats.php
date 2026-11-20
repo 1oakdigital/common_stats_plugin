@@ -6,7 +6,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Attributes\Tries;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
-use OneOakDigital\CommonStats\StatsFlusher;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 
 /**
  * Stores the closed minutes' aggregates. Scheduled every minute by

@@ -5,15 +5,21 @@ namespace OneOakDigital\CommonStats\Tests;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Support\Facades\Redis;
 use OneOakDigital\CommonStats\CommonStatsServiceProvider;
+use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\StatsRecorder;
-use OneOakDigital\CommonStats\StatsRedis;
+use OneOakDigital\CommonStats\Services\StatsManager;
+use OneOakDigital\CommonStats\Services\StatsMetrics;
+use OneOakDigital\CommonStats\Services\StatsReader;
+use OneOakDigital\CommonStats\Services\StatsRecorder;
+use OneOakDigital\CommonStats\Stores\RedisStore;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 /**
  * Runs against a real Redis (REDIS_HOST, default 127.0.0.1) in database
  * COMMON_STATS_TEST_REDIS_DB (default 15), which is emptied before and after
- * every test, with a Laravel connection prefix set.
+ * every test, with a Laravel connection prefix set. The database is SQLite,
+ * or DB_CONNECTION (mysql, pgsql) with DB_HOST, DB_PORT, DB_DATABASE,
+ * DB_USERNAME, DB_PASSWORD.
  */
 abstract class TestCase extends BaseTestCase
 {
@@ -29,6 +35,14 @@ abstract class TestCase extends BaseTestCase
         $this->redis()->flushdb();
 
         parent::tearDown();
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function storeProvider(): array
+    {
+        return ['redis (phpredis)' => ['phpredis'], 'redis (predis)' => ['predis'], 'array' => ['array']];
     }
 
     /**
@@ -50,16 +64,23 @@ abstract class TestCase extends BaseTestCase
             'database' => (int) env('COMMON_STATS_TEST_REDIS_DB', 15),
         ]);
         $app['config']->set('common-stats.fail_silently', false);
+
+        $connection = env('DB_CONNECTION');
+
+        $app['config']->set('database.default', in_array($connection, ['mysql', 'pgsql'], true) ? $connection : 'testing');
     }
 
     /**
-     * Switch the Redis client (phpredis or predis) for the rest of the test.
+     * Use the array store, or the Redis store with this client (phpredis or
+     * predis), for the rest of the test.
      */
-    protected function useRedisClient(string $client): void
+    protected function useStore(string $store): void
     {
-        config(['database.redis.client' => $client]);
+        config('array' === $store
+            ? ['common-stats.store' => 'array']
+            : ['common-stats.store' => 'redis', 'database.redis.client' => $store]);
 
-        foreach (['redis', 'redis.connection', StatsRedis::class, StatsRecorder::class] as $abstract) {
+        foreach (['redis', 'redis.connection', StatsStore::class, StatsMetrics::class, StatsReader::class, StatsRecorder::class, StatsManager::class] as $abstract) {
             $this->app->forgetInstance($abstract);
         }
 
@@ -76,8 +97,8 @@ abstract class TestCase extends BaseTestCase
         return $this->app->make('redis')->connection('default');
     }
 
-    protected function keys(): StatsRedis
+    protected function redisStore(): RedisStore
     {
-        return $this->app->make(StatsRedis::class);
+        return new RedisStore($this->app->make('redis'), (array) config('common-stats.redis'));
     }
 }

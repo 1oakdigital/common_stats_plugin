@@ -58,7 +58,7 @@ class FlushHourStatsTest extends TestCase
      */
     private function storeValues(): void
     {
-        $metric = StatsMetric::query()->create(['identifier' => 'signup.completed', 'type_eid' => EStatType::Count]);
+        $metric = StatsMetric::query()->create(['identifier' => 'signup.completed', 'name' => 'signup.completed', 'type_eid' => EStatType::Count]);
 
         foreach ([[EStatPeriod::Minute, 202611131400], [EStatPeriod::Minute, 202611131402], [EStatPeriod::Hour, 202611011400]] as [$period, $datum]) {
             StatsValue::query()->create(['stats_metric_id' => $metric->id, 'period_eid' => $period, 'datum' => $datum, 'value' => 1, 'samples' => 1]);

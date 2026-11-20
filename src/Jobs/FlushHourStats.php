@@ -8,7 +8,7 @@ use Illuminate\Queue\Attributes\Tries;
 use Illuminate\Support\Facades\Date;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Models\StatsValue;
-use OneOakDigital\CommonStats\StatsFlusher;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 
 /**
  * Stores the closed hours' aggregates, then deletes the minute values older
