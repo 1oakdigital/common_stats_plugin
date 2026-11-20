@@ -22,8 +22,7 @@ return [
     |
     | Where the stats live: "redis", or "array" (the PHP process, for tests:
     | set COMMON_STATS_STORE=array in phpunit.xml when the tests have no
-    | Redis). Nothing is stored in the database unless the application
-    | flushes it (CommonStats::flush()).
+    | Redis). Nothing is persisted.
     |
     | Redis: this connection (config/database.php "redis"), under "prefix"
     | (on top of the connection's own prefix).
@@ -36,6 +35,19 @@ return [
         'connection' => env('COMMON_STATS_REDIS_CONNECTION', 'default'),
         'prefix' => 'common-stats:',
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Flush channels
+    |--------------------------------------------------------------------------
+    |
+    | The channels the application flushes (CommonStats::flush($channel,
+    | ...)), e.g. ["minute", "hour"]. Each has its own bookkeeping and min /
+    | max window, so one never takes another's values.
+    |
+    */
+
+    'channels' => [],
 
     /*
     |--------------------------------------------------------------------------

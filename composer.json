@@ -1,6 +1,6 @@
 {
     "name": "1oakdigital/common_stats_plugin",
-    "description": "Laravel metrics (count, sum, average, min, max) recorded in Redis and stored per minute and hour in the site database.",
+    "description": "Laravel stats (count, sum, average, min, max) declared as classes, kept in Redis, served to Prometheus and flushed to the application.",
     "type": "library",
     "license": "proprietary",
     "authors": [
@@ -11,9 +11,6 @@
     ],
     "require": {
         "php": "^8.4",
-        "illuminate/console": "^13.0",
-        "illuminate/database": "^13.0",
-        "illuminate/queue": "^13.0",
         "illuminate/redis": "^13.0",
         "illuminate/support": "^13.0"
     },

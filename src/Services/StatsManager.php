@@ -2,27 +2,19 @@
 
 namespace OneOakDigital\CommonStats\Services;
 
-use Carbon\CarbonInterface;
 use OneOakDigital\CommonStats\Data\MemoryStat;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
+use OneOakDigital\CommonStats\Data\StatChange;
 use OneOakDigital\CommonStats\Enums\EStatType;
 use OneOakDigital\CommonStats\Exporters\PrometheusExporter;
-use OneOakDigital\CommonStats\Models\StatsValue;
 use OneOakDigital\CommonStats\Query\StatsQuery;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**
  * The CommonStats facade: record by metric name (stat classes record
- * themselves), read what is in memory, render Prometheus, flush to the
- * database, query, prune.
+ * themselves), read, render Prometheus, flush to the application.
  */
 class StatsManager
 {
-    /**
-     * Stored values deleted per query by prune().
-     */
-    public const int PRUNE_CHUNK = 10000;
-
     public function __construct(
         private StatsRecorder $recorder,
         private StatsReader $reader,
@@ -57,6 +49,16 @@ class StatsManager
     }
 
     /**
+     * A query of a stat class or a metric name, in memory.
+     *
+     * @param  class-string<Stat>|string  $stat
+     */
+    public function query(string $stat): StatsQuery
+    {
+        return is_subclass_of($stat, Stat::class) ? $stat::query() : app(StatsQuery::class)->metric($stat);
+    }
+
+    /**
      * The stats (all when none given) in the Prometheus text format.
      *
      * @param  list<class-string<Stat>|string>  $stats
@@ -67,44 +69,14 @@ class StatsManager
     }
 
     /**
-     * Store what changed since the previous flush of the period (see
-     * StatsFlusher::flush()). Returns how many rows were written.
+     * Hand $store what changed since the channel's previous flush (see
+     * StatsFlusher::flush()). Returns how many changes there were.
      *
      * @param  list<class-string<Stat>|string>  $stats
+     * @param  callable(list<StatChange>): mixed  $store
      */
-    public function flush(EStatPeriod $period, array $stats = [], ?CarbonInterface $at = null): int
+    public function flush(string $channel, array $stats, callable $store): int
     {
-        return $this->flusher->flush($period, $stats, $at);
-    }
-
-    /**
-     * A query of a stat class or a metric name.
-     *
-     * @param  class-string<Stat>|string  $stat
-     */
-    public function query(string $stat): StatsQuery
-    {
-        return is_subclass_of($stat, Stat::class) ? $stat::query() : app(StatsQuery::class)->metric($stat);
-    }
-
-    /**
-     * Delete the stored values of the period from before $before. Returns
-     * how many were deleted.
-     */
-    public function prune(EStatPeriod $period, CarbonInterface $before): int
-    {
-        $datum = $period->datum($before);
-        $total = 0;
-
-        do {
-            $deleted = StatsValue::query()
-                ->where('period_eid', $period)
-                ->where('datum', '<', $datum)
-                ->limit(self::PRUNE_CHUNK)
-                ->delete();
-            $total += $deleted;
-        } while (self::PRUNE_CHUNK === $deleted);
-
-        return $total;
+        return $this->flusher->flush($channel, $stats, $store);
     }
 }

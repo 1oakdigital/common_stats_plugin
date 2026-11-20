@@ -5,7 +5,6 @@ namespace OneOakDigital\CommonStats\Stores;
 use Illuminate\Contracts\Redis\Factory;
 use Illuminate\Redis\Connections\Connection;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
 
 /**
@@ -15,8 +14,7 @@ use OneOakDigital\CommonStats\Enums\EStatType;
  * - totals: running totals (StatsStore);
  * - window:{channel}: min / max values since the channel last read them;
  * - last:scrape: the min / max values the last scrape read;
- * - flushed:{channel}: the totals a flush channel has already taken;
- * - metrics: metric identifier => "{stats_metrics.id}|{type}".
+ * - flushed:{channel}: the totals a flush channel has already taken.
  *
  * Every change is one atomic script.
  */
@@ -117,8 +115,9 @@ class RedisStore implements StatsStore
 
     /**
      * @param  array{connection?: string|null, prefix?: string|null}  $config
+     * @param  list<string>  $channels  the flush channels
      */
-    public function __construct(private Factory $redis, private array $config) {}
+    public function __construct(private Factory $redis, private array $config, private array $channels = []) {}
 
     /**
      * How a taken field is given back: totals ("add") or a window value
@@ -133,16 +132,6 @@ class RedisStore implements StatsStore
         return EStatType::tryFrom((int) explode('|', $field, 2)[0])?->redisMode() ?? 'add';
     }
 
-    /**
-     * The channels with a min / max window: the scrape and every period.
-     *
-     * @return list<string>
-     */
-    public static function channels(): array
-    {
-        return [self::SCRAPE, ...array_map(fn (EStatPeriod $period): string => $period->key(), EStatPeriod::cases())];
-    }
-
     public function connection(): Connection
     {
         return $this->redis->connection($this->config['connection'] ?? 'default');
@@ -153,7 +142,7 @@ class RedisStore implements StatsStore
         $keys = [$this->key('totals')];
 
         if ('add' !== $type->redisMode()) {
-            foreach ($this->channels() as $channel) {
+            foreach ([self::SCRAPE, ...$this->channels] as $channel) {
                 $keys[] = $this->key('window:' . $channel);
             }
         }
@@ -210,18 +199,6 @@ class RedisStore implements StatsStore
         if ([] !== $arguments) {
             $this->connection()->eval(self::GIVE_BACK, 2, $this->key('flushed:' . $channel), $this->key('window:' . $channel), ...$arguments);
         }
-    }
-
-    public function cachedMetric(string $identifier): ?string
-    {
-        $cached = $this->connection()->hget($this->key('metrics'), $identifier);
-
-        return is_string($cached) && '' !== $cached ? $cached : null;
-    }
-
-    public function cacheMetric(string $identifier, string $value): void
-    {
-        $this->connection()->hset($this->key('metrics'), $identifier, $value);
     }
 
     public function key(string $name): string

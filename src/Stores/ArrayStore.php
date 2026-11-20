@@ -33,9 +33,9 @@ class ArrayStore implements StatsStore
     private array $flushed = [];
 
     /**
-     * @var array<string, string>
+     * @param  list<string>  $channels  the flush channels
      */
-    private array $metrics = [];
+    public function __construct(private array $channels = []) {}
 
     public function record(string $field, EStatType $type, string $value): void
     {
@@ -44,7 +44,7 @@ class ArrayStore implements StatsStore
         if ('add' === $mode) {
             $this->totals[$field] = ($this->totals[$field] ?? 0.0) + (float) $value;
         } else {
-            foreach (RedisStore::channels() as $channel) {
+            foreach ([self::SCRAPE, ...$this->channels] as $channel) {
                 $this->windows[$channel][$field] = $this->extreme($mode, $this->windows[$channel][$field] ?? null, (float) $value);
             }
         }
@@ -118,16 +118,6 @@ class ArrayStore implements StatsStore
                 $this->windows[$channel][$field] = $this->extreme($mode, $this->windows[$channel][$field] ?? null, (float) $value);
             }
         }
-    }
-
-    public function cachedMetric(string $identifier): ?string
-    {
-        return $this->metrics[$identifier] ?? null;
-    }
-
-    public function cacheMetric(string $identifier, string $value): void
-    {
-        $this->metrics[$identifier] = $value;
     }
 
     private function extreme(string $mode, ?float $current, float $value): float

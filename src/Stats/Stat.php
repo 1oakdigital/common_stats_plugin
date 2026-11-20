@@ -22,8 +22,7 @@ use OneOakDigital\CommonStats\Services\StatsRecorder;
  * }
  *
  * MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued']);
- * CommonStats::flush(EStatPeriod::Minute, [MessagesReceived::class]);   // e.g. every minute
- * MessagesReceived::query()->minutes()->between($from, $to)->where('site', 'dating1')->get();
+ * MessagesReceived::query()->where('site', 'dating1')->memory();
  * ```
  */
 abstract class Stat
@@ -54,7 +53,7 @@ abstract class Stat
     }
 
     /**
-     * A query of the stat's values (stored, and not flushed yet).
+     * A query of the stat's label combinations in memory.
      */
     public static function query(): StatsQuery
     {

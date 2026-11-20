@@ -6,16 +6,17 @@ use OneOakDigital\CommonStats\Enums\EStatType;
 
 /**
  * Where the stats live: Redis (RedisStore), or the PHP process (ArrayStore,
- * for tests). Everything is in memory; the application stores what it wants
- * with StatsFlusher.
+ * for tests). Nothing is persisted: the application takes what changed with
+ * StatsFlusher and stores it itself, if it wants.
  *
  * Fields are "{type}|{identifier}" (a count, sum, an average's sum, a min or
  * max) and "{type}|{identifier}|n" (samples).
  *
  * - totals: running totals of the count, sum and average fields and of the
  *   samples of every type; they only grow.
- * - one window per channel ("scrape", and each EStatPeriod key) with the min
- *   and max values since that channel last read them.
+ * - one window per channel ("scrape", and each flush channel of
+ *   config('common-stats.channels')) with the min and max values since
+ *   that channel last read them.
  * - per flush channel, the totals it has already stored, so a flush takes
  *   only what changed since its previous one. Channels never take values
  *   from each other.
@@ -69,11 +70,4 @@ interface StatsStore
      * @param  array<string, string>  $fields
      */
     public function giveBack(string $channel, array $fields): void;
-
-    /**
-     * The cached "{id}|{type}" of a metric, or null.
-     */
-    public function cachedMetric(string $identifier): ?string;
-
-    public function cacheMetric(string $identifier, string $value): void;
 }
