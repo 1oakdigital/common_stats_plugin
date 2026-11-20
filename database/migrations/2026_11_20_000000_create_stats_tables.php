@@ -9,8 +9,8 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * stats_metrics: the metrics by identifier, with their type
-     * (OneOakDigital\CommonStats\Enums\EStatType). stats_values: a metric's
+     * stats_metrics: the metrics (a name and its labels) by identifier, with
+     * their type (OneOakDigital\CommonStats\Enums\EStatType). stats_values: a metric's
      * value per minute or hour (EStatPeriod); datum is the start of the
      * period as YYYYMMDDHHMM.
      */
@@ -18,7 +18,10 @@ return new class extends Migration
     {
         Schema::create('stats_metrics', function (Blueprint $table): void {
             $table->id();
+            // name;key=value;... (labels sorted by key), OneOakDigital\CommonStats\Metric.
             $table->string('identifier', 191)->unique();
+            $table->string('name', 120)->index();
+            $table->json('labels')->nullable();
             $table->smallInteger('type_eid');
             $table->timestamp('created_at')->nullable();
         });

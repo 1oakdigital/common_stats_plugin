@@ -5,12 +5,16 @@ namespace OneOakDigital\CommonStats;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Jobs\FlushHourStats;
 use OneOakDigital\CommonStats\Jobs\FlushMinuteStats;
+use OneOakDigital\CommonStats\Stores\ArrayStore;
+use OneOakDigital\CommonStats\Stores\RedisStore;
 
 /**
- * Registers the recorder (CommonStats facade), the migrations and, unless
- * common-stats.schedule is off, the minute and hour jobs in the scheduler.
+ * Registers the store (common-stats.store), the recorder, reader and the
+ * CommonStats facade, the migrations and, unless common-stats.schedule is
+ * off, the minute and hour jobs in the scheduler.
  */
 class CommonStatsServiceProvider extends ServiceProvider
 {
@@ -18,15 +22,19 @@ class CommonStatsServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/common-stats.php', 'common-stats');
 
-        $this->app->singleton(
-            StatsRedis::class,
-            fn (Application $app): StatsRedis => new StatsRedis($app->make('redis'), (array) $app['config']->get('common-stats.redis')),
-        );
+        $this->app->singleton(StatsStore::class, fn (Application $app): StatsStore => match ($app['config']->get('common-stats.store', 'redis')) {
+            'array' => new ArrayStore,
+            default => new RedisStore($app->make('redis'), (array) $app['config']->get('common-stats.redis')),
+        });
+
+        $this->app->singleton(StatsMetrics::class);
+        $this->app->singleton(StatsReader::class);
+        $this->app->singleton(StatsManager::class);
 
         $this->app->singleton(
             StatsRecorder::class,
             fn (Application $app): StatsRecorder => new StatsRecorder(
-                $app->make(StatsRedis::class),
+                $app->make(StatsStore::class),
                 (bool) $app['config']->get('common-stats.fail_silently', true),
             ),
         );

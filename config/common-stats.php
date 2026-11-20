@@ -4,15 +4,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Redis
+    | Stats
     |--------------------------------------------------------------------------
     |
-    | Metric values are aggregated per minute and per hour in this Redis
-    | connection (config/database.php "redis"), under "prefix" (on top of the
-    | connection's own prefix). An aggregate the jobs never store expires
-    | after "ttl_hours".
+    | The application's stat classes (extending CountStat, SumStat,
+    | AverageStat, MinStat or MaxStat): the list of what it collects, and
+    | the HELP text of the Prometheus output.
     |
     */
+
+    'stats' => [],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Store
+    |--------------------------------------------------------------------------
+    |
+    | Where values are aggregated before they are stored: "redis", or "array"
+    | (the PHP process, for tests: set COMMON_STATS_STORE=array in
+    | phpunit.xml when the tests have no Redis).
+    |
+    | Redis: this connection (config/database.php "redis"), under "prefix"
+    | (on top of the connection's own prefix). A bucket the jobs never store
+    | expires after "ttl_hours".
+    |
+    */
+
+    'store' => env('COMMON_STATS_STORE', 'redis'),
 
     'redis' => [
         'connection' => env('COMMON_STATS_REDIS_CONNECTION', 'default'),
