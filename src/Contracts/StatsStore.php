@@ -2,68 +2,73 @@
 
 namespace OneOakDigital\CommonStats\Contracts;
 
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
-use OneOakDigital\CommonStats\Stores\ArrayStore;
-use OneOakDigital\CommonStats\Stores\RedisStore;
 
 /**
- * Where values are aggregated before they are stored: Redis (RedisStore),
- * or the PHP process (ArrayStore, for tests). Hashes hold the field
- * "{type}|{identifier}" (count, sum, an average's running sum, min or max)
- * and "{type}|{identifier}|n" (samples).
+ * Where the stats live: Redis (RedisStore), or the PHP process (ArrayStore,
+ * for tests). Everything is in memory; the application stores what it wants
+ * with StatsFlusher.
+ *
+ * Fields are "{type}|{identifier}" (a count, sum, an average's sum, a min or
+ * max) and "{type}|{identifier}|n" (samples).
+ *
+ * - totals: running totals of the count, sum and average fields and of the
+ *   samples of every type; they only grow.
+ * - one window per channel ("scrape", and each EStatPeriod key) with the min
+ *   and max values since that channel last read them.
+ * - per flush channel, the totals it has already stored, so a flush takes
+ *   only what changed since its previous one. Channels never take values
+ *   from each other.
  */
 interface StatsStore
 {
     /**
-     * Add a value to the minute and hour buckets, or, memory-only, to the
-     * memory hash (never stored in the database).
+     * The channel of the Prometheus scrape (and memory reads).
      */
-    public function record(string $field, EStatType $type, string $value, int $minuteDatum, int $hourDatum, bool $memoryOnly): void;
+    public const string SCRAPE = 'scrape';
+
+    public function record(string $field, EStatType $type, string $value): void;
 
     /**
-     * The datums of the period with a bucket to store.
+     * The totals, and the min / max values of the scrape window, which then
+     * starts again (the values are kept as the last ones until newer come).
      *
-     * @return list<int>
+     * @return array{totals: array<string, string>, extremes: array<string, string>}
      */
-    public function pending(EStatPeriod $period): array;
+    public function scrape(): array;
 
     /**
-     * Take the bucket for storing (a bucket left by a run that died first),
-     * or null when there is none. Values recorded meanwhile go to a new
-     * bucket.
+     * The totals, and the min / max values of the scrape window (or the last
+     * ones), changing nothing.
      *
-     * @return array<string, string>|null
+     * @return array{totals: array<string, string>, extremes: array<string, string>}
      */
-    public function claim(EStatPeriod $period, int $datum): ?array;
+    public function peekScrape(): array;
 
     /**
-     * The claimed bucket is stored: drop it.
-     */
-    public function release(EStatPeriod $period, int $datum): void;
-
-    /**
-     * The bucket's hashes not stored yet (the live one and a claimed one),
-     * without taking them.
+     * Take, for a flush channel, what changed since its previous take: the
+     * differences of the totals, and its window's min / max values. Only
+     * the metrics with these names (all when empty).
      *
-     * @return list<array<string, string>>
+     * @param  list<string>  $names
+     * @return array<string, string>
      */
-    public function peek(EStatPeriod $period, int $datum): array;
+    public function take(string $channel, array $names = []): array;
 
     /**
-     * Atomically move the memory hash into the running totals (count, sum,
-     * average, samples) and the last values (min, max), and return both.
+     * What take() would return, changing nothing.
      *
-     * @return array{totals: array<string, string>, last: array<string, string>}
+     * @param  list<string>  $names
+     * @return array<string, string>
      */
-    public function pullMemory(): array;
+    public function peek(string $channel, array $names = []): array;
 
     /**
-     * The memory hash, running totals and last values, without changing them.
+     * Undo a take() whose values could not be stored.
      *
-     * @return array{current: array<string, string>, totals: array<string, string>, last: array<string, string>}
+     * @param  array<string, string>  $fields
      */
-    public function peekMemory(): array;
+    public function giveBack(string $channel, array $fields): void;
 
     /**
      * The cached "{id}|{type}" of a metric, or null.

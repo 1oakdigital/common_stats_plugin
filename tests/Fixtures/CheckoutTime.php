@@ -11,6 +11,4 @@ class CheckoutTime extends AverageStat
     protected string $description = 'Checkout time';
 
     protected array $labels = [];
-
-    protected bool $memory = false;
 }

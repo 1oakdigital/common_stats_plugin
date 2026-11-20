@@ -7,52 +7,65 @@ use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Data\Aggregate;
+use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Models\StatsValue;
+use OneOakDigital\CommonStats\Stats\Stat;
+use Throwable;
 use UnexpectedValueException;
 
 /**
- * Stores the buckets of the closed minutes or hours in stats_values, merged
- * with what is already stored for the same period (Aggregate::merge()).
- *
- * A bucket is claimed (renamed) before it is read, so values recorded
- * meanwhile (a server whose clock is behind) go to a new bucket that the
- * next run stores. A bucket left by a run that died is stored first. A run
- * that dies after the commit but before the bucket is dropped stores it
- * twice.
+ * Stores what changed in the store since the previous flush of the same
+ * period in stats_values, for the stats the application chooses, when it
+ * chooses (e.g. every minute from its scheduler). Each period has its own
+ * channel: flushing minutes never takes what an hourly flush would store.
+ * A row already stored for the same period and datum is merged with
+ * (Aggregate::merge()). When the database write fails, the values are given
+ * back to the store for the next flush.
  */
 class StatsFlusher
 {
     public function __construct(private StatsStore $store, private StatsMetrics $metrics) {}
 
     /**
-     * Store every closed period of the kind (before the one holding $now).
-     * Returns how many values were written.
+     * The metric names of stat classes or names.
+     *
+     * @param  list<class-string<Stat>|string>  $stats
+     * @return list<string>
      */
-    public function flush(EStatPeriod $period, ?CarbonInterface $now = null): int
+    public static function names(array $stats): array
     {
-        $current = $period->datum($now ?? CarbonImmutable::now());
-        $datums = $this->store->pending($period);
-        sort($datums);
+        return array_values(array_unique(array_map(
+            fn (string $stat): string => is_subclass_of($stat, Stat::class) ? $stat::make()->name() : Metric::make($stat)->name,
+            $stats,
+        )));
+    }
 
-        $written = 0;
+    /**
+     * Store the stats' changes as the period holding $at (default: the
+     * period before now, for a flush at the start of each period). Returns
+     * how many rows were written.
+     *
+     * @param  list<class-string<Stat>|string>  $stats  stat classes or metric names (none: all)
+     *
+     * @throws Throwable when the database write fails (nothing is lost)
+     */
+    public function flush(EStatPeriod $period, array $stats = [], ?CarbonInterface $at = null): int
+    {
+        $datum = $period->datum($at ?? $period->previous(CarbonImmutable::now()));
+        $fields = $this->store->take($period->key(), self::names($stats));
 
-        foreach ($datums as $datum) {
-            if ($datum >= $current) {
-                continue;
-            }
-
-            $fields = $this->store->claim($period, $datum);
-
-            if (null === $fields) {
-                continue;
-            }
-
-            $written += $this->store($period, $datum, Aggregate::fromFields($fields));
-            $this->store->release($period, $datum);
+        if ([] === $fields) {
+            return 0;
         }
 
-        return $written;
+        try {
+            return $this->store($period, $datum, Aggregate::fromFields($fields));
+        } catch (Throwable $exception) {
+            $this->store->giveBack($period->key(), $fields);
+
+            throw $exception;
+        }
     }
 
     /**
@@ -66,6 +79,10 @@ class StatsFlusher
         $byMetricId = [];
 
         foreach ($aggregates as $aggregate) {
+            if (0 === $aggregate->samples) {
+                continue;
+            }
+
             $metric = $this->metrics->resolve($aggregate->identifier, $aggregate->type);
 
             if ($metric['type'] !== $aggregate->type) {

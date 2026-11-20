@@ -9,7 +9,8 @@ use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatType;
 
 /**
- * Reads the memory-only metrics (memory() and pull()). Periodic stats are
+ * Reads the stats as they are in the store: running totals, and the min /
+ * max values of the scrape window (memory(), scrape()). Stored values are
  * read with StatsQuery.
  */
 class StatsReader
@@ -17,71 +18,52 @@ class StatsReader
     public function __construct(private StatsStore $store) {}
 
     /**
-     * The memory-only metrics, without resetting anything.
+     * Every metric, changing nothing.
      *
      * @return list<MemoryStat>
      */
     public function memory(): array
     {
-        $memory = $this->store->peekMemory();
-
-        return $this->memoryStats($memory['totals'], $memory['last'], $memory['current']);
+        return $this->memoryStats(...$this->store->peekScrape());
     }
 
     /**
-     * The memory-only metrics, taking what was recorded since the last pull
-     * into the running totals (count, sum, average) and the last values (min,
-     * max), atomically: several readers never count a value twice.
+     * Every metric, for a Prometheus scrape: the min / max window starts
+     * again (its values stay as the last ones until newer come). Totals are
+     * never reset, so several pods or scrapers read the same numbers.
      *
      * @return list<MemoryStat>
      */
-    public function pull(): array
+    public function scrape(): array
     {
-        $memory = $this->store->pullMemory();
-
-        return $this->memoryStats($memory['totals'], $memory['last']);
+        return $this->memoryStats(...$this->store->scrape());
     }
 
     /**
      * @param  array<string, string>  $totals
-     * @param  array<string, string>  $last
-     * @param  array<string, string>  $current
+     * @param  array<string, string>  $extremes
      * @return list<MemoryStat>
      */
-    private function memoryStats(array $totals, array $last, array $current = []): array
+    private function memoryStats(array $totals, array $extremes): array
     {
         $aggregates = Aggregate::fromFields($totals);
-        $lastValues = Aggregate::fromFields($last);
-
-        foreach (Aggregate::fromFields($current) as $key => $aggregate) {
-            if (in_array($aggregate->type, [EStatType::Min, EStatType::Max], true)) {
-                $lastValues[$key] = $aggregate;
-                $aggregates[$key] = new Aggregate($aggregate->identifier, $aggregate->type, 0.0, ($aggregates[$key]->samples ?? 0) + $aggregate->samples);
-
-                continue;
-            }
-
-            $aggregates[$key] = isset($aggregates[$key]) ? $aggregates[$key]->merge($aggregate) : $aggregate;
-        }
-
+        $extremeValues = Aggregate::fromFields($extremes);
         $stats = [];
 
-        foreach ($aggregates + $lastValues as $key => $aggregate) {
+        foreach ($aggregates as $key => $aggregate) {
             $isExtreme = in_array($aggregate->type, [EStatType::Min, EStatType::Max], true);
-            $value = $isExtreme ? ($lastValues[$key]->value ?? null) : $aggregates[$key]->value;
+            $value = $isExtreme ? ($extremeValues[$key]->value ?? null) : $aggregate->value;
 
             if (null === $value) {
                 continue;
             }
 
-            $samples = $aggregates[$key]->samples ?? 0;
-
             $stats[$key] = new MemoryStat(
                 Metric::fromIdentifier($aggregate->identifier),
                 $aggregate->type,
                 $value,
-                $samples,
-                EStatType::Average === $aggregate->type ? $value * $samples : ($isExtreme ? 0.0 : $value),
+                $aggregate->samples,
+                $isExtreme ? 0.0 : (EStatType::Average === $aggregate->type ? $value * $aggregate->samples : $value),
             );
         }
 

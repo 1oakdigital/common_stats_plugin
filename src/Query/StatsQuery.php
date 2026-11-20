@@ -23,9 +23,9 @@ use OneOakDigital\CommonStats\Services\StatsReader;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**
- * Reads a stat's values wherever they are: stored in stats_values, or still
- * in the store (the current period, and closed ones not stored yet), merged.
- * Immutable: every method returns a new query.
+ * Reads a stat's values per period: what is stored in stats_values, plus
+ * what has not been flushed for the period yet (StatsStore::peek()), counted
+ * in the current period. Immutable: every method returns a new query.
  *
  * ```php
  * MessagesSent::query()->hours()->since(now()->subDay())->where('site', 'dating1')->get();  // per label combination
@@ -33,15 +33,15 @@ use OneOakDigital\CommonStats\Stats\Stat;
  * CommonStats::query('signup.completed')->value();                                          // this minute
  * ```
  *
- * A memory-only stat has no periods: read it with memory() or pull().
+ * The values not flushed yet are only meaningful for periods the
+ * application flushes: for another period they are everything since the
+ * beginning.
  */
 class StatsQuery
 {
     private ?string $name = null;
 
     private ?EStatType $type = null;
-
-    private bool $memoryOnly = false;
 
     private EStatPeriod $period = EStatPeriod::Minute;
 
@@ -58,7 +58,7 @@ class StatsQuery
 
     public function stat(Stat $stat): static
     {
-        return $this->with(['name' => $stat->name(), 'type' => $stat::type(), 'memoryOnly' => $stat->isMemoryOnly()]);
+        return $this->with(['name' => $stat->name(), 'type' => $stat::type()]);
     }
 
     /**
@@ -79,6 +79,11 @@ class StatsQuery
     public function hours(): static
     {
         return $this->with(['period' => EStatPeriod::Hour]);
+    }
+
+    public function days(): static
+    {
+        return $this->with(['period' => EStatPeriod::Day]);
     }
 
     /**
@@ -116,7 +121,7 @@ class StatsQuery
      */
     public function get(): Collection
     {
-        $this->assertPeriodic();
+        $this->assertStat();
 
         $first = $this->period->datum($this->from ?? CarbonImmutable::now());
         $last = $this->period->datum($this->to ?? CarbonImmutable::now());
@@ -141,25 +146,21 @@ class StatsQuery
                 });
         }
 
-        foreach ($this->store->pending($this->period) as $datum) {
-            if ($datum < $first || $datum > $last) {
-                continue;
-            }
+        $current = $this->period->datum(CarbonImmutable::now());
 
-            foreach ($this->store->peek($this->period, $datum) as $fields) {
-                foreach (Aggregate::fromFields($fields) as $aggregate) {
-                    $metric = Metric::fromIdentifier($aggregate->identifier);
-                    $type = $series[$aggregate->identifier]['type'] ?? $this->metrics->find($aggregate->identifier)['type'] ?? $aggregate->type;
+        if ($current >= $first && $current <= $last) {
+            foreach (Aggregate::fromFields($this->store->peek($this->period->key(), [(string) $this->name])) as $aggregate) {
+                $metric = Metric::fromIdentifier($aggregate->identifier);
+                $type = $series[$aggregate->identifier]['type'] ?? $this->metrics->find($aggregate->identifier)['type'] ?? $aggregate->type;
 
-                    if ($aggregate->type !== $type || ! $this->matches($metric, $type)) {
-                        continue;
-                    }
-
-                    $series[$aggregate->identifier] ??= ['metric' => $metric, 'type' => $type, 'points' => []];
-                    $points = &$series[$aggregate->identifier]['points'];
-                    $points[$datum] = isset($points[$datum]) ? $points[$datum]->merge($aggregate) : $aggregate;
-                    unset($points);
+                if (0 === $aggregate->samples || $aggregate->type !== $type || ! $this->matches($metric, $type)) {
+                    continue;
                 }
+
+                $series[$aggregate->identifier] ??= ['metric' => $metric, 'type' => $type, 'points' => []];
+                $points = &$series[$aggregate->identifier]['points'];
+                $points[$current] = isset($points[$current]) ? $points[$current]->merge($aggregate) : $aggregate;
+                unset($points);
             }
         }
 
@@ -234,23 +235,16 @@ class StatsQuery
     }
 
     /**
-     * A memory-only stat's label combinations, without resetting anything.
+     * The stat's label combinations as they are in the store (running
+     * totals; min / max of the scrape window), changing nothing.
      *
      * @return Collection<int, MemoryStat>
      */
     public function memory(): Collection
     {
-        return $this->filterMemory($this->reader->memory());
-    }
+        $this->assertStat();
 
-    /**
-     * A memory-only stat's label combinations, pulled (StatsReader::pull()).
-     *
-     * @return Collection<int, MemoryStat>
-     */
-    public function pull(): Collection
-    {
-        return $this->filterMemory($this->reader->pull());
+        return $this->filterMemory($this->reader->memory());
     }
 
     /**
@@ -277,15 +271,12 @@ class StatsQuery
         return true;
     }
 
-    private function assertPeriodic(): void
+    private function assertStat(): void
     {
         if (null === $this->name) {
             throw new LogicException('Choose a stat or a metric to query.');
         }
 
-        if ($this->memoryOnly) {
-            throw new LogicException("Stat [{$this->name}] is memory-only: read it with memory() or pull().");
-        }
     }
 
     /**

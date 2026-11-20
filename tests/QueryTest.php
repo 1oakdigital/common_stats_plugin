@@ -4,12 +4,9 @@ namespace OneOakDigital\CommonStats\Tests;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
-use LogicException;
 use OneOakDigital\CommonStats\Data\StatsSeries;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\Services\StatsFlusher;
-use OneOakDigital\CommonStats\Tests\Fixtures\ApiRequests;
 use OneOakDigital\CommonStats\Tests\Fixtures\CheckoutTime;
 use OneOakDigital\CommonStats\Tests\Fixtures\MessagesReceived;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -19,7 +16,7 @@ class QueryTest extends TestCase
     use RefreshDatabase;
 
     #[DataProvider('storeProvider')]
-    public function test_values_are_read_from_the_database_and_the_store_together(string $store): void
+    public function test_stored_values_and_those_not_flushed_yet_are_read_together(string $store): void
     {
         $this->useStore($store);
         $this->recordMessages();
@@ -45,8 +42,7 @@ class QueryTest extends TestCase
             array_map(fn ($point): array => [$point->datum, $point->value], $query->points()),
         );
         $this->assertSame(3.0, $query->value()?->value);
-        $this->assertSame(15.0, MessagesReceived::query()->hours()->value()?->value);
-        $this->assertSame(15.0, CommonStats::query('mailer.api.messages')->hours()->value()?->value);
+        $this->assertSame(3.0, CommonStats::query('mailer.api.messages')->value()?->value);
         $this->assertNull($query->where('site', 'unknown')->total());
     }
 
@@ -54,8 +50,7 @@ class QueryTest extends TestCase
     {
         Carbon::setTestNow('2026-11-20 14:36:10');
         CheckoutTime::record(100);
-        Carbon::setTestNow('2026-11-20 14:36:50');
-        $this->app->make(StatsFlusher::class)->flush(EStatPeriod::Minute, Carbon::parse('2026-11-20 14:37:00'));
+        CommonStats::flush(EStatPeriod::Minute, at: now());
         CheckoutTime::record(400);
         CheckoutTime::record(700);
 
@@ -64,29 +59,20 @@ class QueryTest extends TestCase
         $this->assertSame([400.0, 3], [$total?->value, $total?->samples]);
     }
 
-    public function test_a_memory_only_stat_has_no_periods(): void
-    {
-        $this->expectException(LogicException::class);
-
-        ApiRequests::query()->get();
-    }
-
     /**
-     * dating1 queued: 3 at 14:35 (stored), 5 at 14:36 (stored 2, then 3 more
-     * in the store); dating2 queued: 4 at 14:36; dating1 quarantined: 2 and
-     * dating1 queued: 1 at 14:37 (the current minute).
+     * dating1 queued: 3 at 14:35 and 5 at 14:36 (stored), 1 not flushed yet;
+     * dating2 queued: 4 at 14:36 (stored); dating1 quarantined: 2 not
+     * flushed yet. Now is 14:37.
      */
     private function recordMessages(): void
     {
-        Carbon::setTestNow('2026-11-20 14:35:20');
+        Carbon::setTestNow('2026-11-20 14:36:00');
         MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued'], 3);
-        Carbon::setTestNow('2026-11-20 14:36:20');
-        MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued'], 2);
-        $this->app->make(StatsFlusher::class)->flush(EStatPeriod::Minute, Carbon::parse('2026-11-20 14:37:00'));
-        MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued'], 3);
+        CommonStats::flush(EStatPeriod::Minute);
+        Carbon::setTestNow('2026-11-20 14:37:00');
+        MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued'], 5);
         MessagesReceived::increment(['site' => 'dating2', 'result' => 'queued'], 4);
-        $this->app->make(StatsFlusher::class)->flush(EStatPeriod::Minute, Carbon::parse('2026-11-20 14:36:50'));
-        Carbon::setTestNow('2026-11-20 14:37:20');
+        CommonStats::flush(EStatPeriod::Minute);
         MessagesReceived::increment(['site' => 'dating1', 'result' => 'quarantined'], 2);
         MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued']);
     }

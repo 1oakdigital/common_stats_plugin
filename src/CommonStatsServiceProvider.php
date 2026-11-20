@@ -2,12 +2,9 @@
 
 namespace OneOakDigital\CommonStats;
 
-use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
-use OneOakDigital\CommonStats\Jobs\FlushHourStats;
-use OneOakDigital\CommonStats\Jobs\FlushMinuteStats;
 use OneOakDigital\CommonStats\Services\StatsManager;
 use OneOakDigital\CommonStats\Services\StatsMetrics;
 use OneOakDigital\CommonStats\Services\StatsReader;
@@ -16,9 +13,9 @@ use OneOakDigital\CommonStats\Stores\ArrayStore;
 use OneOakDigital\CommonStats\Stores\RedisStore;
 
 /**
- * Registers the store (common-stats.store), the recorder, reader and the
- * CommonStats facade, the migrations and, unless common-stats.schedule is
- * off, the minute and hour jobs in the scheduler.
+ * Registers the store (common-stats.store), the services and the
+ * CommonStats facade, and the migration. Nothing is scheduled: the
+ * application flushes the stats it wants to store, when it wants.
  */
 class CommonStatsServiceProvider extends ServiceProvider
 {
@@ -57,14 +54,5 @@ class CommonStatsServiceProvider extends ServiceProvider
                 __DIR__ . '/../database/migrations' => $this->app->databasePath('migrations'),
             ], 'common-stats-migrations');
         }
-
-        $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
-            if ( ! $this->app['config']->get('common-stats.schedule', true)) {
-                return;
-            }
-
-            $schedule->job(FlushMinuteStats::class)->everyMinute()->withoutOverlapping()->onOneServer();
-            $schedule->job(FlushHourStats::class)->hourlyAt(1)->withoutOverlapping()->onOneServer();
-        });
     }
 }

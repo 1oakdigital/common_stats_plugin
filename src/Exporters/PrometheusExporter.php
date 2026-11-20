@@ -4,19 +4,18 @@ namespace OneOakDigital\CommonStats\Exporters;
 
 use OneOakDigital\CommonStats\Data\MemoryStat;
 use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 use OneOakDigital\CommonStats\Services\StatsReader;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**
- * The memory-only stats in the Prometheus text format (version 0.0.4), for
- * a site's metrics endpoint. Every render pulls (StatsReader::pull()), so
- * values recorded since are moved into the running totals once, however
- * many pods or scrapers read:
+ * Stats in the Prometheus text format (version 0.0.4), for an application's
+ * metrics endpoint (StatsReader::scrape()):
  *
  * - Count, Sum: counter {name}_total, the running total;
  * - Average: summary {name}_sum and {name}_count, the running sum and count;
  * - Min, Max: gauge {name}, the lowest / highest value between the last two
- *   pulls (kept until newer values come).
+ *   scrapes (kept until newer values come).
  *
  * Names get . : - turned into _. HELP comes from the stat classes in
  * config('common-stats.stats'). Every pod serves the same totals: aggregate
@@ -26,12 +25,22 @@ class PrometheusExporter
 {
     public function __construct(private StatsReader $reader) {}
 
-    public function render(): string
+    /**
+     * The stats (stat classes or metric names; none: all).
+     *
+     * @param  list<class-string<Stat>|string>  $stats
+     */
+    public function render(array $stats = []): string
     {
+        $names = StatsFlusher::names($stats);
         $help = $this->help();
         $families = [];
 
-        foreach ($this->reader->pull() as $stat) {
+        foreach ($this->reader->scrape() as $stat) {
+            if ([] !== $names && ! in_array($stat->metric->name, $names, true)) {
+                continue;
+            }
+
             $name = $this->name($stat->metric->name);
             $families[$name] ??= ['type' => $stat->type, 'help' => $help[$stat->metric->name] ?? null, 'stats' => []];
 

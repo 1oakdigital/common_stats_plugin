@@ -11,6 +11,4 @@ class UploadSize extends MaxStat
     protected string $description = 'Upload size';
 
     protected array $labels = [];
-
-    protected bool $memory = false;
 }

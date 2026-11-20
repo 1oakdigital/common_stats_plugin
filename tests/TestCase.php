@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Redis;
 use OneOakDigital\CommonStats\CommonStatsServiceProvider;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Facades\CommonStats;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 use OneOakDigital\CommonStats\Services\StatsManager;
 use OneOakDigital\CommonStats\Services\StatsMetrics;
 use OneOakDigital\CommonStats\Services\StatsReader;
@@ -80,7 +81,7 @@ abstract class TestCase extends BaseTestCase
             ? ['common-stats.store' => 'array']
             : ['common-stats.store' => 'redis', 'database.redis.client' => $store]);
 
-        foreach (['redis', 'redis.connection', StatsStore::class, StatsMetrics::class, StatsReader::class, StatsRecorder::class, StatsManager::class] as $abstract) {
+        foreach (['redis', 'redis.connection', StatsStore::class, StatsMetrics::class, StatsReader::class, StatsRecorder::class, StatsManager::class, StatsFlusher::class] as $abstract) {
             $this->app->forgetInstance($abstract);
         }
 
