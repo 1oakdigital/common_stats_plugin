@@ -1,0 +1,48 @@
+{
+    "name": "1oakdigital/common_stats_plugin",
+    "description": "Laravel metrics (count, sum, average, min, max) recorded in Redis and stored per minute and hour in the site database.",
+    "type": "library",
+    "license": "proprietary",
+    "authors": [
+        {
+            "name": "Chris Cynarski",
+            "email": "chris@cynarski.net"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "illuminate/console": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/queue": "^13.0",
+        "illuminate/redis": "^13.0",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.19",
+        "orchestra/testbench": "^11.0",
+        "phpunit/phpunit": "^12.0",
+        "predis/predis": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "OneOakDigital\\CommonStats\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "OneOakDigital\\CommonStats\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "OneOakDigital\\CommonStats\\CommonStatsServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

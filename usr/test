@@ -1,0 +1,3 @@
+#!/bin/zsh
+
+vendor/bin/phpunit --testdox --stop-on-failure --stop-on-error --stop-on-defect --stop-on-warning
