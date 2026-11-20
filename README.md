@@ -1,32 +1,25 @@
 # Common Stats plugin
 
-Metrics for a Laravel 13 site, declared as classes. Values are recorded in the site's own Redis and then either:
-- **stored**: aggregated per minute and per hour, and saved in the site's own database (`stats_metrics`,
-  `stats_values`) by scheduled jobs;
-- **memory-only**: kept in Redis until they are read, for example by a Prometheus endpoint.
+Stats for a Laravel 13 application, declared as classes and kept in memory, in the application's own Redis. Uses:
+- serve them to Prometheus (`CommonStats::prometheus()`);
+- read them in the application;
+- flush what changed at the intervals it chooses, and store it wherever it wants.
 
-Recording never touches the database and never calls another service. Reading is one API, whether the values are
-already in the database or still in Redis.
+The plugin persists nothing: no tables, no migrations, no scheduled jobs. Recording never calls another service.
 
 ## Installation
 
 ```bash
 composer require 1oakdigital/common_stats_plugin
-php artisan migrate
 ```
 
-The service provider is auto-discovered. It registers the migration and the two scheduled jobs. The site needs:
-- a Redis connection;
-- a running scheduler and queue worker;
-- a cache store with locks for `onOneServer()`, such as Redis.
-
-Tests without Redis can set `COMMON_STATS_STORE=array` in `phpunit.xml`. The values then stay in the PHP process, but
-behave the same way.
+The service provider is auto-discovered. Tests without Redis can set `COMMON_STATS_STORE=array` in `phpunit.xml`. The
+values then stay in the PHP process, with the same behaviour.
 
 ## Declaring stats
 
-Each stat is a class that extends one of the base classes. The base class sets the stat's type. The class declares
-its name, description, labels, and whether it is memory-only:
+Each stat is a class that extends one of the base classes. The base class sets the stat's type. The class declares its
+name, description and labels:
 
 ```php
 namespace App\Stats;
@@ -40,17 +33,14 @@ class MessagesReceived extends CountStat
     protected string $description = 'Emails received by the messages API';
 
     /** Every value must have exactly these labels. */
-    protected array $labels = ['site', 'result'];
-
-    /** true: memory-only (Prometheus); false (default): stored per minute and hour. */
-    protected bool $memory = false;
+    protected array $labels = ['result'];
 }
 ```
 
 List the classes in `config/common-stats.php` under `stats`. That list is the inventory of what the application
 collects, and it gives the Prometheus HELP text.
 
-| Base class | Type (`EStatType`) | Record | Kept per period |
+| Base class | Type (`EStatType`) | Record | Value |
 |---|---|---|---|
 | `CountStat` | Count 10 | `::increment($labels, $by = 1)` | number of occurrences |
 | `SumStat` | Sum 20 | `::add($value, $labels)` | total |
@@ -59,8 +49,8 @@ collects, and it gives the Prometheus HELP text.
 | `MaxStat` | Max 50 | `::record($value, $labels)` | highest |
 
 ```php
-MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued']);
-SendDuration::record(182.4, ['provider' => 'gmail']);
+MessagesReceived::increment(['result' => 'queued']);
+RequestDuration::record(182.4, ['route' => 'messages.store']);
 ```
 
 Every value also counts as a sample, which is how many values were recorded.
@@ -78,121 +68,100 @@ request.
 `CommonStats::increment('signup.completed')` and `CommonStats::record($name, EStatType::Max, $value, $labels)` record
 by name, without a class.
 
-## Reading
+## How values are kept
 
-### Stored stats
+Redis holds three things:
+- **Running totals**: counts, sums, an average's sum, and every type's sample count. They only grow.
+- **Min / max windows**: one per consumer, i.e. the Prometheus scrape and each flush channel. Each holds the lowest or
+  highest value since that consumer last read it.
+- **Per flush channel**: the totals that channel has already taken.
 
-`query()` reads what is in the database and what is still in Redis together: the current minute or hour, and closed
-ones the jobs haven't stored yet.
+So the scrape and the flush channels never take values from each other. Several pods can scrape and flush the same
+Redis.
 
-```php
-$query = MessagesReceived::query()->hours()->since(now()->subDay());   // minutes() is the default
-
-$query->get();                                 // Collection<StatsSeries>: per label combination, with its points
-$query->where('site', 'dating1')->points();    // list<StatsPoint>: per hour, matching combinations together
-$query->where('result', 'queued')->total();    // StatsTotal: the whole range together
-MessagesReceived::query()->value();            // StatsTotal of the current minute
-CommonStats::query('signup.completed')->hours()->value(now()->subHour());
-```
-
-Combining several periods or label combinations works by type:
-- counts and sums are added;
-- averages are weighted by their samples;
-- min and max take the lowest or highest value.
-
-Each point and total also carries its `samples`.
-
-### Memory-only stats
+## Prometheus
 
 ```php
-ApiRequests::query()->where('route', 'messages.store')->memory();   // Collection<MemoryStat>, changes nothing
-CommonStats::pull();                                                // every memory-only metric, pulled
-CommonStats::prometheus();                                          // Prometheus text (pulls)
+Route::get('/metrics', fn () => response(CommonStats::prometheus([MessagesReceived::class, RequestDuration::class]), 200, [
+    'Content-Type' => 'text/plain; version=0.0.4',
+]));
 ```
 
-A pull atomically moves the values recorded since the last pull into running totals, so several pods or scrapers
-never count a value twice:
-- **Count and Sum:** `value` is the running total.
-- **Average:** `value` is the running mean, `sum` and `samples` the running sum and count.
-- **Min and Max:** `value` is the lowest or highest value between the last two pulls. It is kept until newer values
-  arrive.
-
-The totals start again from 0 only if Redis loses them.
-
-### Prometheus
-
-```php
-Route::get('/metrics', fn () => response(CommonStats::prometheus(), 200, ['Content-Type' => 'text/plain; version=0.0.4']));
-```
+`prometheus()` takes the stat classes or metric names to serve (none: all).
 
 | Type | Exposed as |
 |---|---|
-| Count, Sum | counter `{name}_total` |
+| Count, Sum | counter `{name}_total`, the running total |
 | Average | summary `{name}_sum` and `{name}_count` |
-| Min, Max | gauge `{name}` |
+| Min, Max | gauge `{name}`: the lowest or highest value since the previous scrape, kept until newer values arrive |
 
 In names, `.`, `:` and `-` become `_`. Every pod serves the same totals, so aggregate across pods with `max` in
-PromQL, not `sum`. Don't cache the response: each scrape has to pull.
+PromQL, not `sum`. Don't cache the response: each scrape restarts the min/max window.
 
-## Storage
+## Flushing
 
-**`stats_metrics`**:
-- `id`;
-- `identifier`, unique: `name;key=value;…` with the labels sorted by key;
-- `name`, indexed;
-- `labels`, JSON;
-- `type_eid`, the `EStatType`;
-- `created_at`.
+To keep stats, the application flushes a channel at its own interval and stores what it receives:
 
-**`stats_values`**:
+```php
+// config/common-stats.php
+'channels' => ['minute', 'hour'],
 
-| Column | |
+// routes/console.php
+Schedule::call(fn () => CommonStats::flush('minute', [MessagesReceived::class], function (array $changes): void {
+    foreach ($changes as $change) {       // StatChange
+        MyStats::store('minute', now()->subMinute(), $change->metric->name, $change->metric->labels, $change->value, $change->samples);
+    }
+}))->everyMinute();
+```
+
+`flush($channel, $stats, $store)`:
+- takes what changed since that channel's previous flush, for the given stat classes or metric names (all when the
+  list is empty);
+- passes it to `$store` as a list of `StatChange`;
+- returns how many changes there were.
+
+Each `StatChange` has `metric` (`name`, `labels`), `type`, `value`, `samples` and `sum`:
+
+| Type | `value` |
 |---|---|
-| `stats_metric_id` | the metric |
-| `period_eid` | `EStatPeriod`: 10 minute, 20 hour |
-| `datum` | the start of the period as `YYYYMMDDHHMM` in `app.timezone`, e.g. `202611201437` (minute) or `202611201400` (hour) |
-| `value` | the period's count, sum, average, min or max |
-| `samples` | how many values were recorded |
+| Count, Sum | the change of the total |
+| Average | the mean of the new values (`sum` is their total) |
+| Min, Max | the lowest or highest new value |
 
-The migration runs on SQLite, MySQL and PostgreSQL; CI tests all three. There is one row per metric, period and datum.
-Hour values are kept. Minute values older than `retention.minute_days` are deleted.
+If `$store` throws, the changes are given back to Redis for the next flush, and the exception is rethrown. A channel
+must be listed in `channels`.
 
-**Redis**, under `redis.prefix` (default `common-stats:`):
+## Reading
+
+```php
+CommonStats::memory();                                            // list<MemoryStat>, every metric
+MessagesReceived::query()->where('result', 'queued')->memory();   // Collection<MemoryStat>
+CommonStats::query('signup.completed')->memory();
+```
+
+Reading changes nothing. Each `MemoryStat` has `metric`, `type`, `value`, `samples` and `sum`:
+- `value` is the running total, the running mean, or the min / max of the scrape window;
+- `samples` is how many values were recorded;
+- `sum` is the running sum, for an average.
+
+## Redis keys
+
+Keys sit under `redis.prefix` (default `common-stats:`), on top of the connection's own prefix:
 
 | Key | Holds |
 |---|---|
-| `minute:{datum}`, `hour:{datum}` | a period's bucket; renamed `…:flushing` while it is being stored, and expires after `ttl_hours` if never stored |
-| `pending:minute`, `pending:hour` | the datums still to store |
-| `memory` | memory-only values since the last pull |
-| `memory:totals`, `memory:last` | the running totals, and the last min / max values |
-| `metrics` | a cache of `stats_metrics` ids |
+| `totals` | the running totals |
+| `window:scrape`, `window:{channel}` | the min/max windows |
+| `last:scrape` | the min/max values the last scrape read |
+| `flushed:{channel}` | what each channel has taken |
 
-Each recorded value is a single atomic Lua script.
-
-## Jobs
-
-| Job | Schedule | Does |
-|---|---|---|
-| `FlushMinuteStats` | every minute | stores the closed minutes |
-| `FlushHourStats` | hourly at :01 | stores the closed hours, then prunes old minute values |
-
-Both use `withoutOverlapping()->onOneServer()` and run on `common-stats.queue`. To schedule them yourself, set
-`COMMON_STATS_SCHEDULE=false`.
-
-**Late values.** A bucket is renamed before it is read, so a value recorded meanwhile (for example from a server whose
-clock is behind) lands in a new bucket. The next run merges it into the same row, and reads include it all along.
-
-**Known gap.** If a job dies after storing a bucket but before dropping it from Redis, the next run stores that bucket
-again. That double-counts its counts, sums and samples; min and max are unaffected.
-
-A stat's type is fixed by its first stored value. Values recorded by name with a different type are dropped when
-stored, and an `UnexpectedValueException` is reported.
+Every change is a single atomic Lua script. Nothing expires. A stat whose label values keep changing (an id, a
+timestamp) grows the hashes without limit, so keep label values to a small set.
 
 ## Configuration
 
 ```bash
 php artisan vendor:publish --tag=common-stats-config
-php artisan vendor:publish --tag=common-stats-migrations   # only to change the migration
 ```
 
 | Key | Env | Default | |
@@ -201,17 +170,26 @@ php artisan vendor:publish --tag=common-stats-migrations   # only to change the 
 | `store` | `COMMON_STATS_STORE` | `redis` | `redis`, or `array` for tests |
 | `redis.connection` | `COMMON_STATS_REDIS_CONNECTION` | `default` | Redis connection from `config/database.php` |
 | `redis.prefix` | | `common-stats:` | Key prefix |
-| `redis.ttl_hours` | | 48 | Expiry of buckets that are never stored |
-| `schedule` | `COMMON_STATS_SCHEDULE` | true | Schedule the jobs |
-| `queue` | `COMMON_STATS_QUEUE` | null | The jobs' queue (null: default) |
-| `retention.minute_days` | `COMMON_STATS_MINUTE_RETENTION_DAYS` | 7 | Days of minute values kept (0: all) |
+| `channels` | | `[]` | Flush channels, e.g. `['minute', 'hour']` |
 | `fail_silently` | | true | Report Redis failures while recording instead of throwing |
+
+## Upgrading from 1.x
+
+- Nothing is persisted any more. The plugin drops:
+  - the `stats_metrics` / `stats_values` migration and models;
+  - the minute and hour buckets;
+  - the `FlushMinuteStats` / `FlushHourStats` jobs and their schedule;
+  - the period queries (`minutes()`, `hours()`, `get()`, `total()`, …).
+- If you ran the 1.x migration, the plugin no longer drops those tables; drop them yourself if you don't need them.
+- To keep stats, declare `channels` and call `CommonStats::flush()` from your own schedule.
+- `$memory` is gone from the stat classes: every stat is in memory.
+- `CommonStats::pull()` is gone: `prometheus()` scrapes, `memory()` and `query()->memory()` read.
+- Config keys `schedule`, `queue`, `retention` and `redis.ttl_hours` are gone; `channels` is new.
 
 ## Development
 
 The tests need Redis: `REDIS_HOST` (default 127.0.0.1), using database `COMMON_STATS_TEST_REDIS_DB` (default 15), which
-they empty. The database is in-memory SQLite, or `DB_CONNECTION=mysql|pgsql` with `DB_HOST`, `DB_PORT`, `DB_DATABASE`,
-`DB_USERNAME` and `DB_PASSWORD`.
+they empty.
 
 ```bash
 composer install

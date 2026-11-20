@@ -11,6 +11,4 @@ class Revenue extends SumStat
     protected string $description = 'Revenue in EUR';
 
     protected array $labels = [];
-
-    protected bool $memory = false;
 }

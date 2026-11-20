@@ -11,6 +11,4 @@ class ApiPeak extends MaxStat
     protected string $description = 'Slowest API request';
 
     protected array $labels = [];
-
-    protected bool $memory = true;
 }

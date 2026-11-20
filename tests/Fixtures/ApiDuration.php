@@ -11,6 +11,4 @@ class ApiDuration extends AverageStat
     protected string $description = 'API request duration';
 
     protected array $labels = ['route'];
-
-    protected bool $memory = true;
 }

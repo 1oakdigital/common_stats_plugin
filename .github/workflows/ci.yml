@@ -16,16 +16,12 @@ concurrency:
 
 jobs:
   tests:
-    name: "Tests (PHP ${{ matrix.php }}, ${{ matrix.db }})"
+    name: "Tests (PHP ${{ matrix.php }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { php: "8.4", db: sqlite }
-          - { php: "8.5", db: sqlite }
-          - { php: "8.5", db: mysql }
-          - { php: "8.5", db: pgsql }
+        php: ["8.4", "8.5"]
     services:
       redis:
         image: redis:7
@@ -36,45 +32,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-          MYSQL_DATABASE: common_stats
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: common_stats
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     env:
       REDIS_HOST: 127.0.0.1
-      DB_CONNECTION: ${{ matrix.db }}
-      DB_HOST: 127.0.0.1
-      DB_PORT: ${{ matrix.db == 'pgsql' && '5432' || '3306' }}
-      DB_DATABASE: common_stats
-      DB_USERNAME: ${{ matrix.db == 'pgsql' && 'postgres' || 'root' }}
-      DB_PASSWORD: ${{ matrix.db == 'pgsql' && 'postgres' || '' }}
     steps:
       - uses: actions/checkout@v5
 
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: curl, dom, json, libxml, mbstring, redis, pdo_mysql, pdo_pgsql, pdo_sqlite
+          extensions: curl, dom, json, libxml, mbstring, redis
           coverage: none
 
       - name: Install dependencies
@@ -98,4 +64,4 @@ jobs:
         run: composer update --no-interaction --no-progress --prefer-dist
 
       - name: Check formatting
-        run: vendor/bin/pint --test src tests config database
+        run: vendor/bin/pint --test src tests config

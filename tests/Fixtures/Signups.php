@@ -11,6 +11,4 @@ class Signups extends CountStat
     protected string $description = 'Completed signups';
 
     protected array $labels = [];
-
-    protected bool $memory = false;
 }

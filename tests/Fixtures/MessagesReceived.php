@@ -11,6 +11,4 @@ class MessagesReceived extends CountStat
     protected string $description = 'Emails received by the API';
 
     protected array $labels = ['site', 'result'];
-
-    protected bool $memory = false;
 }

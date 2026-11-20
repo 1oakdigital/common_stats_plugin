@@ -3,145 +3,150 @@
 namespace OneOakDigital\CommonStats\Stores;
 
 use OneOakDigital\CommonStats\Contracts\StatsStore;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
 
 /**
  * The stats in the PHP process, with RedisStore's behaviour: for the tests
- * of the sites (common-stats.store = "array"), which need no Redis. Lost at
- * the end of the process.
+ * of the applications (common-stats.store = "array"), which need no Redis.
+ * Lost at the end of the process.
  */
 class ArrayStore implements StatsStore
 {
     /**
-     * @var array<string, array<string, string>>
+     * @var array<string, float>
      */
-    private array $hashes = [];
+    private array $totals = [];
 
     /**
-     * @var array<string, array<int, true>>
+     * @var array<string, array<string, float>>
      */
-    private array $pending = [];
+    private array $windows = [];
 
     /**
-     * @var array<string, string>
+     * @var array<string, float>
      */
-    private array $metrics = [];
+    private array $last = [];
 
-    public function record(string $field, EStatType $type, string $value, int $minuteDatum, int $hourDatum, bool $memoryOnly): void
+    /**
+     * @var array<string, array<string, float>>
+     */
+    private array $flushed = [];
+
+    /**
+     * @param  list<string>  $channels  the flush channels
+     */
+    public function __construct(private array $channels = []) {}
+
+    public function record(string $field, EStatType $type, string $value): void
     {
-        if ($memoryOnly) {
-            $this->update('memory', $field, $type->redisMode(), $value);
+        $mode = $type->redisMode();
 
-            return;
-        }
-
-        foreach ([[EStatPeriod::Minute, $minuteDatum], [EStatPeriod::Hour, $hourDatum]] as [$period, $datum]) {
-            $this->update($this->bucket($period, $datum), $field, $type->redisMode(), $value);
-            $this->pending[$period->key()][$datum] = true;
-        }
-    }
-
-    public function pending(EStatPeriod $period): array
-    {
-        return array_keys($this->pending[$period->key()] ?? []);
-    }
-
-    public function claim(EStatPeriod $period, int $datum): ?array
-    {
-        $key = $this->bucket($period, $datum);
-
-        if ( ! isset($this->hashes[$key . ':flushing'])) {
-            if ( ! isset($this->hashes[$key])) {
-                unset($this->pending[$period->key()][$datum]);
-
-                return null;
-            }
-
-            $this->hashes[$key . ':flushing'] = $this->hashes[$key];
-            unset($this->hashes[$key]);
-        }
-
-        return $this->hashes[$key . ':flushing'];
-    }
-
-    public function release(EStatPeriod $period, int $datum): void
-    {
-        $key = $this->bucket($period, $datum);
-        unset($this->hashes[$key . ':flushing']);
-
-        if ( ! isset($this->hashes[$key])) {
-            unset($this->pending[$period->key()][$datum]);
-        }
-    }
-
-    public function peek(EStatPeriod $period, int $datum): array
-    {
-        $key = $this->bucket($period, $datum);
-
-        return array_values(array_filter([$this->hashes[$key] ?? [], $this->hashes[$key . ':flushing'] ?? []]));
-    }
-
-    public function pullMemory(): array
-    {
-        $lastTypes = [(string) EStatType::Min->value, (string) EStatType::Max->value];
-
-        foreach ($this->hashes['memory'] ?? [] as $field => $value) {
-            $kind = explode('|', $field, 2)[0];
-
-            if (in_array($kind, $lastTypes, true) && ! str_ends_with($field, '|n')) {
-                $this->hashes['memory:last'][$field] = $value;
-            } else {
-                $this->hashes['memory:totals'][$field] = $this->number((float) ($this->hashes['memory:totals'][$field] ?? 0) + (float) $value);
+        if ('add' === $mode) {
+            $this->totals[$field] = ($this->totals[$field] ?? 0.0) + (float) $value;
+        } else {
+            foreach ([self::SCRAPE, ...$this->channels] as $channel) {
+                $this->windows[$channel][$field] = $this->extreme($mode, $this->windows[$channel][$field] ?? null, (float) $value);
             }
         }
 
-        unset($this->hashes['memory']);
-
-        return ['totals' => $this->hashes['memory:totals'] ?? [], 'last' => $this->hashes['memory:last'] ?? []];
+        $this->totals[$field . '|n'] = ($this->totals[$field . '|n'] ?? 0.0) + 1;
     }
 
-    public function peekMemory(): array
+    public function scrape(): array
+    {
+        foreach ($this->windows[self::SCRAPE] ?? [] as $field => $value) {
+            $this->last[$field] = $value;
+        }
+
+        unset($this->windows[self::SCRAPE]);
+
+        return ['totals' => $this->strings($this->totals), 'extremes' => $this->strings($this->last)];
+    }
+
+    public function peekScrape(): array
     {
         return [
-            'current' => $this->hashes['memory'] ?? [],
-            'totals' => $this->hashes['memory:totals'] ?? [],
-            'last' => $this->hashes['memory:last'] ?? [],
+            'totals' => $this->strings($this->totals),
+            'extremes' => $this->strings(array_merge($this->last, $this->windows[self::SCRAPE] ?? [])),
         ];
     }
 
-    public function cachedMetric(string $identifier): ?string
+    public function take(string $channel, array $names = []): array
     {
-        return $this->metrics[$identifier] ?? null;
+        $changes = $this->peek($channel, $names);
+
+        foreach ($changes as $field => $value) {
+            if (array_key_exists($field, $this->totals)) {
+                $this->flushed[$channel][$field] = $this->totals[$field];
+            } else {
+                unset($this->windows[$channel][$field]);
+            }
+        }
+
+        return $changes;
     }
 
-    public function cacheMetric(string $identifier, string $value): void
+    public function peek(string $channel, array $names = []): array
     {
-        $this->metrics[$identifier] = $value;
+        $changes = [];
+
+        foreach ($this->totals as $field => $value) {
+            $difference = $value - ($this->flushed[$channel][$field] ?? 0.0);
+
+            if ($this->wanted($field, $names) && 0 !== $difference) {
+                $changes[$field] = (string) $difference;
+            }
+        }
+
+        foreach ($this->windows[$channel] ?? [] as $field => $value) {
+            if ($this->wanted($field, $names)) {
+                $changes[$field] = (string) $value;
+            }
+        }
+
+        return $changes;
     }
 
-    private function update(string $key, string $field, string $mode, string $value): void
+    public function giveBack(string $channel, array $fields): void
     {
-        $current = $this->hashes[$key][$field] ?? null;
+        foreach ($fields as $field => $value) {
+            $mode = RedisStore::giveBackMode($field);
 
-        $this->hashes[$key][$field] = match (true) {
-            'add' === $mode => $this->number((float) ($current ?? 0) + (float) $value),
-            null === $current,
-            'min' === $mode && (float) $value < (float) $current,
-            'max' === $mode && (float) $value > (float) $current => $value,
-            default => $current,
+            if ('add' === $mode) {
+                $this->flushed[$channel][$field] = ($this->flushed[$channel][$field] ?? 0.0) - (float) $value;
+            } else {
+                $this->windows[$channel][$field] = $this->extreme($mode, $this->windows[$channel][$field] ?? null, (float) $value);
+            }
+        }
+    }
+
+    private function extreme(string $mode, ?float $current, float $value): float
+    {
+        return match (true) {
+            null === $current => $value,
+            'min' === $mode => min($current, $value),
+            default => max($current, $value),
         };
-
-        $this->hashes[$key][$field . '|n'] = (string) ((int) ($this->hashes[$key][$field . '|n'] ?? 0) + 1);
     }
 
-    private function bucket(EStatPeriod $period, int $datum): string
+    /**
+     * @param  list<string>  $names
+     */
+    private function wanted(string $field, array $names): bool
     {
-        return $period->key() . ':' . $datum;
+        if ([] === $names) {
+            return true;
+        }
+
+        return 1 === preg_match('/^\d+\|([^;|]+)/', $field, $match) && in_array($match[1], $names, true);
     }
 
-    private function number(float $value): string
+    /**
+     * @param  array<string, float>  $values
+     * @return array<string, string>
+     */
+    private function strings(array $values): array
     {
-        return (string) $value;
+        return array_map(fn (float $value): string => (string) $value, $values);
     }
 }

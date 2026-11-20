@@ -6,14 +6,12 @@ use InvalidArgumentException;
 use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatType;
 use OneOakDigital\CommonStats\Query\StatsQuery;
-use OneOakDigital\CommonStats\Services\StatsReader;
 use OneOakDigital\CommonStats\Services\StatsRecorder;
 
 /**
- * A metric the application collects, declared as a class: its name, labels,
- * description and whether it is memory-only. Extend CountStat, SumStat,
- * AverageStat, MinStat or MaxStat (the type), and list the class in
- * config('common-stats.stats').
+ * A metric the application collects, declared as a class: its name, labels
+ * and description. Extend CountStat, SumStat, AverageStat, MinStat or MaxStat
+ * (the type), and list the class in config('common-stats.stats').
  *
  * ```php
  * class MessagesReceived extends CountStat
@@ -21,11 +19,10 @@ use OneOakDigital\CommonStats\Services\StatsRecorder;
  *     protected string $name = 'mailer.api.messages';
  *     protected string $description = 'Emails received by the messages API';
  *     protected array $labels = ['site', 'result'];
- *     protected bool $memory = true;
  * }
  *
  * MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued']);
- * MessagesReceived::query()->minutes()->between($from, $to)->where('site', 'dating1')->get();
+ * MessagesReceived::query()->where('site', 'dating1')->memory();
  * ```
  */
 abstract class Stat
@@ -47,12 +44,6 @@ abstract class Stat
      */
     protected array $labels = [];
 
-    /**
-     * Kept in memory only, until read (StatsReader::pull(), e.g. by a
-     * Prometheus endpoint), instead of stored per minute and hour.
-     */
-    protected bool $memory = false;
-
     abstract public static function type(): EStatType;
 
     public static function make(): static
@@ -62,7 +53,7 @@ abstract class Stat
     }
 
     /**
-     * A query of the stat's values (stored and not stored yet).
+     * A query of the stat's label combinations in memory.
      */
     public static function query(): StatsQuery
     {
@@ -85,11 +76,6 @@ abstract class Stat
     public function labels(): array
     {
         return $this->labels;
-    }
-
-    public function isMemoryOnly(): bool
-    {
-        return $this->memory;
     }
 
     /**
@@ -128,6 +114,6 @@ abstract class Stat
     {
         $stat = static::make();
 
-        app(StatsRecorder::class)->record($stat->name, static::type(), $value, $stat->metric($labels)->labels, $stat->memory);
+        app(StatsRecorder::class)->record($stat->name, static::type(), $value, $stat->metric($labels)->labels);
     }
 }

@@ -2,119 +2,108 @@
 
 namespace OneOakDigital\CommonStats\Services;
 
-use Carbon\CarbonImmutable;
-use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Data\Aggregate;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
-use OneOakDigital\CommonStats\Models\StatsValue;
-use UnexpectedValueException;
+use OneOakDigital\CommonStats\Data\Metric;
+use OneOakDigital\CommonStats\Data\StatChange;
+use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Stats\Stat;
+use Throwable;
 
 /**
- * Stores the buckets of the closed minutes or hours in stats_values, merged
- * with what is already stored for the same period (Aggregate::merge()).
- *
- * A bucket is claimed (renamed) before it is read, so values recorded
- * meanwhile (a server whose clock is behind) go to a new bucket that the
- * next run stores. A bucket left by a run that died is stored first. A run
- * that dies after the commit but before the bucket is dropped stores it
- * twice.
+ * Hands the application what changed since the previous flush of a channel
+ * (config('common-stats.channels'), e.g. "minute" and "hour"), for the stats
+ * it chooses, when it chooses (e.g. from its scheduler), to store wherever
+ * it wants. Each channel has its own bookkeeping: flushing "minute" never
+ * takes what an "hour" flush or the Prometheus scrape would get. When the
+ * application's callback throws, the changes are given back for the next
+ * flush.
  */
 class StatsFlusher
 {
-    public function __construct(private StatsStore $store, private StatsMetrics $metrics) {}
+    /**
+     * @param  list<string>  $channels
+     */
+    public function __construct(private StatsStore $store, private array $channels) {}
 
     /**
-     * Store every closed period of the kind (before the one holding $now).
-     * Returns how many values were written.
+     * The metric names of stat classes or names.
+     *
+     * @param  list<class-string<Stat>|string>  $stats
+     * @return list<string>
      */
-    public function flush(EStatPeriod $period, ?CarbonInterface $now = null): int
+    public static function names(array $stats): array
     {
-        $current = $period->datum($now ?? CarbonImmutable::now());
-        $datums = $this->store->pending($period);
-        sort($datums);
-
-        $written = 0;
-
-        foreach ($datums as $datum) {
-            if ($datum >= $current) {
-                continue;
-            }
-
-            $fields = $this->store->claim($period, $datum);
-
-            if (null === $fields) {
-                continue;
-            }
-
-            $written += $this->store($period, $datum, Aggregate::fromFields($fields));
-            $this->store->release($period, $datum);
-        }
-
-        return $written;
+        return array_values(array_unique(array_map(
+            fn (string $stat): string => is_subclass_of($stat, Stat::class) ? $stat::make()->name() : Metric::make($stat)->name,
+            $stats,
+        )));
     }
 
     /**
-     * Merge the aggregates into stats_values. Returns how many rows were
-     * written.
+     * Take the changes of the stats (stat classes or metric names; none:
+     * all) since the channel's previous flush, and pass them to $store.
+     * Returns how many changes there were.
      *
-     * @param  array<string, Aggregate>  $aggregates
+     * @param  list<class-string<Stat>|string>  $stats
+     * @param  callable(list<StatChange>): mixed  $store
+     *
+     * @throws InvalidArgumentException when the channel is not configured
+     * @throws Throwable what $store throws (the changes are given back)
      */
-    private function store(EStatPeriod $period, int $datum, array $aggregates): int
+    public function flush(string $channel, array $stats, callable $store): int
     {
-        $byMetricId = [];
-
-        foreach ($aggregates as $aggregate) {
-            $metric = $this->metrics->resolve($aggregate->identifier, $aggregate->type);
-
-            if ($metric['type'] !== $aggregate->type) {
-                report(new UnexpectedValueException("Metric [{$aggregate->identifier}] is a {$metric['type']->name} metric; values recorded as {$aggregate->type->name} were dropped."));
-
-                continue;
-            }
-
-            $byMetricId[$metric['id']] = $aggregate;
+        if ( ! in_array($channel, $this->channels, true)) {
+            throw new InvalidArgumentException("Unknown flush channel [{$channel}]: add it to config('common-stats.channels').");
         }
 
-        if ([] === $byMetricId) {
+        $fields = $this->store->take($channel, self::names($stats));
+        $changes = $this->changes($fields);
+
+        if ([] === $changes) {
             return 0;
         }
 
-        return DB::transaction(function () use ($period, $datum, $byMetricId): int {
-            $stored = StatsValue::query()
-                ->where('period_eid', $period)
-                ->where('datum', $datum)
-                ->whereIn('stats_metric_id', array_keys($byMetricId))
-                ->get()
-                ->keyBy('stats_metric_id');
+        try {
+            $store($changes);
+        } catch (Throwable $exception) {
+            $this->store->giveBack($channel, $fields);
 
-            $inserts = [];
+            throw $exception;
+        }
 
-            foreach ($byMetricId as $metricId => $aggregate) {
-                $existing = $stored->get($metricId);
+        return count($changes);
+    }
 
-                if (null === $existing) {
-                    $inserts[] = [
-                        'stats_metric_id' => $metricId,
-                        'period_eid' => $period->value,
-                        'datum' => $datum,
-                        'value' => $aggregate->value,
-                        'samples' => $aggregate->samples,
-                    ];
+    /**
+     * @param  array<string, string>  $fields
+     * @return list<StatChange>
+     */
+    private function changes(array $fields): array
+    {
+        $changes = [];
 
-                    continue;
-                }
-
-                $merged = new Aggregate($aggregate->identifier, $aggregate->type, $existing->value, $existing->samples)->merge($aggregate);
-                $existing->forceFill(['value' => $merged->value, 'samples' => $merged->samples])->save();
+        foreach (Aggregate::fromFields($fields) as $key => $aggregate) {
+            if (0 === $aggregate->samples) {
+                continue;
             }
 
-            foreach (array_chunk($inserts, 500) as $chunk) {
-                StatsValue::query()->insert($chunk);
-            }
+            $changes[$key] = new StatChange(
+                Metric::fromIdentifier($aggregate->identifier),
+                $aggregate->type,
+                $aggregate->value,
+                $aggregate->samples,
+                match ($aggregate->type) {
+                    EStatType::Average => $aggregate->value * $aggregate->samples,
+                    EStatType::Min, EStatType::Max => 0.0,
+                    default => $aggregate->value,
+                },
+            );
+        }
 
-            return count($byMetricId);
-        });
+        ksort($changes);
+
+        return array_values($changes);
     }
 }

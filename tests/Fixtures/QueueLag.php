@@ -11,6 +11,4 @@ class QueueLag extends MinStat
     protected string $description = 'Queue lag';
 
     protected array $labels = [];
-
-    protected bool $memory = false;
 }

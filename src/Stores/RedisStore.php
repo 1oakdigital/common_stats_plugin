@@ -5,226 +5,222 @@ namespace OneOakDigital\CommonStats\Stores;
 use Illuminate\Contracts\Redis\Factory;
 use Illuminate\Redis\Connections\Connection;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
 
 /**
- * The stats in Redis (common-stats.redis). Keys, under the prefix (default
+ * The stats in Redis (common-stats.redis). Keys under the prefix (default
  * "common-stats:"), on top of the connection's own prefix:
  *
- * - minute:{datum}, hour:{datum}: a period's bucket (expires after ttl_hours
- *   if never stored); {key}:flushing while it is being stored;
- * - pending:minute, pending:hour: the datums with a bucket to store;
- * - memory: the memory-only values since the last pull;
- * - memory:totals, memory:last: running totals and last min / max values;
- * - metrics: metric identifier => "{stats_metrics.id}|{type}".
+ * - totals: running totals (StatsStore);
+ * - window:{channel}: min / max values since the channel last read them;
+ * - last:scrape: the min / max values the last scrape read;
+ * - flushed:{channel}: the totals a flush channel has already taken.
  *
- * Every write is one atomic script.
+ * Every change is one atomic script.
  */
 class RedisStore implements StatsStore
 {
     /**
-     * Adds ARGV[3] to field ARGV[1] of the hash KEYS[i] with mode ARGV[2]
-     * (add, min or max), and counts the sample.
+     * KEYS: totals, then every window. ARGV: field, mode (add, min or max),
+     * value.
      */
-    private const string UPDATE = <<<'LUA'
-        local function update(key, field, mode, value)
-          if mode == 'add' then
-            redis.call('HINCRBYFLOAT', key, field, value)
-          else
-            local current = redis.call('HGET', key, field)
+    private const string RECORD = <<<'LUA'
+        local field, mode, value = ARGV[1], ARGV[2], ARGV[3]
+        if mode == 'add' then
+          redis.call('HINCRBYFLOAT', KEYS[1], field, value)
+        else
+          for i = 2, #KEYS do
+            local current = redis.call('HGET', KEYS[i], field)
             if (not current)
               or (mode == 'min' and tonumber(value) < tonumber(current))
               or (mode == 'max' and tonumber(value) > tonumber(current)) then
-              redis.call('HSET', key, field, value)
+              redis.call('HSET', KEYS[i], field, value)
             end
           end
-          redis.call('HINCRBY', key, field .. '|n', 1)
         end
-        LUA;
-
-    /**
-     * KEYS: minute bucket, hour bucket, minute pending, hour pending.
-     * ARGV: field, mode, value, minute datum, hour datum, TTL in seconds.
-     */
-    private const string RECORD = self::UPDATE . <<<'LUA'
-
-        for i = 1, 2 do
-          update(KEYS[i], ARGV[1], ARGV[2], ARGV[3])
-          redis.call('EXPIRE', KEYS[i], ARGV[6])
-          redis.call('SADD', KEYS[i + 2], ARGV[i + 3])
-        end
+        redis.call('HINCRBY', KEYS[1], field .. '|n', 1)
         return 1
         LUA;
 
     /**
-     * KEYS: memory hash. ARGV: field, mode, value.
+     * KEYS: scrape window, last:scrape, totals. Moves the window into last.
      */
-    private const string RECORD_MEMORY = self::UPDATE . <<<'LUA'
-
-        update(KEYS[1], ARGV[1], ARGV[2], ARGV[3])
-        return 1
-        LUA;
-
-    /**
-     * KEYS: memory, totals, last. ARGV: the type values whose value goes to
-     * "last" (min, max). Moves the memory hash and returns totals and last.
-     */
-    private const string PULL = <<<'LUA'
-        local fields = redis.call('HGETALL', KEYS[1])
+    private const string SCRAPE_SCRIPT = <<<'LUA'
+        local window = redis.call('HGETALL', KEYS[1])
+        for i = 1, #window, 2 do
+          redis.call('HSET', KEYS[2], window[i], window[i + 1])
+        end
         redis.call('DEL', KEYS[1])
-        local lastTypes = {}
-        for i = 1, #ARGV do lastTypes[ARGV[i]] = true end
-        for i = 1, #fields, 2 do
-          local field, value = fields[i], fields[i + 1]
-          local isSamples = string.sub(field, -2) == '|n'
-          local kind = string.match(field, '^(%d+)|')
-          if lastTypes[kind] and not isSamples then
-            redis.call('HSET', KEYS[3], field, value)
-          else
-            redis.call('HINCRBYFLOAT', KEYS[2], field, value)
+        return {redis.call('HGETALL', KEYS[3]), redis.call('HGETALL', KEYS[2])}
+        LUA;
+
+    /**
+     * KEYS: totals, flushed:{channel}, window:{channel}. ARGV[1]: "1" to
+     * take, "0" to peek; ARGV[2...]: metric names (none: all).
+     */
+    private const string TAKE = <<<'LUA'
+        local take = ARGV[1] == '1'
+        local all = #ARGV < 2
+        local names = {}
+        for i = 2, #ARGV do names[ARGV[i]] = true end
+        local function wanted(field)
+          if all then return true end
+          local name = string.match(field, '^%d+|([^;|]+)')
+          return name ~= nil and names[name] == true
+        end
+        local out = {}
+        local totals = redis.call('HGETALL', KEYS[1])
+        for i = 1, #totals, 2 do
+          local field, value = totals[i], totals[i + 1]
+          if wanted(field) then
+            local difference = tonumber(value) - tonumber(redis.call('HGET', KEYS[2], field) or '0')
+            if difference ~= 0 then
+              table.insert(out, field)
+              table.insert(out, string.format('%.17g', difference))
+              if take then redis.call('HSET', KEYS[2], field, value) end
+            end
           end
         end
-        return {redis.call('HGETALL', KEYS[2]), redis.call('HGETALL', KEYS[3])}
+        local window = redis.call('HGETALL', KEYS[3])
+        for i = 1, #window, 2 do
+          if wanted(window[i]) then
+            table.insert(out, window[i])
+            table.insert(out, window[i + 1])
+            if take then redis.call('HDEL', KEYS[3], window[i]) end
+          end
+        end
+        return out
         LUA;
 
     /**
-     * @param  array{connection?: string|null, prefix?: string|null, ttl_hours?: int|null}  $config
+     * KEYS: flushed:{channel}, window:{channel}. ARGV: field, value, mode
+     * triples (add: a total to take again; min / max: a window value).
      */
-    public function __construct(private Factory $redis, private array $config) {}
+    private const string GIVE_BACK = <<<'LUA'
+        for i = 1, #ARGV, 3 do
+          local field, value, mode = ARGV[i], ARGV[i + 1], ARGV[i + 2]
+          if mode == 'add' then
+            redis.call('HINCRBYFLOAT', KEYS[1], field, -tonumber(value))
+          else
+            local current = redis.call('HGET', KEYS[2], field)
+            if (not current)
+              or (mode == 'min' and tonumber(value) < tonumber(current))
+              or (mode == 'max' and tonumber(value) > tonumber(current)) then
+              redis.call('HSET', KEYS[2], field, value)
+            end
+          end
+        end
+        return 1
+        LUA;
+
+    /**
+     * @param  array{connection?: string|null, prefix?: string|null}  $config
+     * @param  list<string>  $channels  the flush channels
+     */
+    public function __construct(private Factory $redis, private array $config, private array $channels = []) {}
+
+    /**
+     * How a taken field is given back: totals ("add") or a window value
+     * ("min", "max").
+     */
+    public static function giveBackMode(string $field): string
+    {
+        if (str_ends_with($field, '|n')) {
+            return 'add';
+        }
+
+        return EStatType::tryFrom((int) explode('|', $field, 2)[0])?->redisMode() ?? 'add';
+    }
 
     public function connection(): Connection
     {
         return $this->redis->connection($this->config['connection'] ?? 'default');
     }
 
-    public function record(string $field, EStatType $type, string $value, int $minuteDatum, int $hourDatum, bool $memoryOnly): void
+    public function record(string $field, EStatType $type, string $value): void
     {
-        if ($memoryOnly) {
-            $this->connection()->eval(self::RECORD_MEMORY, 1, $this->key('memory'), $field, $type->redisMode(), $value);
+        $keys = [$this->key('totals')];
 
-            return;
-        }
-
-        $this->connection()->eval(
-            self::RECORD,
-            4,
-            $this->bucket(EStatPeriod::Minute, $minuteDatum),
-            $this->bucket(EStatPeriod::Hour, $hourDatum),
-            $this->pendingKey(EStatPeriod::Minute),
-            $this->pendingKey(EStatPeriod::Hour),
-            $field,
-            $type->redisMode(),
-            $value,
-            (string) $minuteDatum,
-            (string) $hourDatum,
-            (string) (max(1, (int) ($this->config['ttl_hours'] ?? 48)) * 3600),
-        );
-    }
-
-    public function pending(EStatPeriod $period): array
-    {
-        return array_map(intval(...), array_values((array) $this->connection()->smembers($this->pendingKey($period))));
-    }
-
-    public function claim(EStatPeriod $period, int $datum): ?array
-    {
-        $redis = $this->connection();
-        $key = $this->bucket($period, $datum);
-        $flushing = $key . ':flushing';
-
-        if ( ! $redis->exists($flushing)) {
-            if ( ! $redis->exists($key)) {
-                $redis->srem($this->pendingKey($period), $datum);
-
-                return null;
+        if ('add' !== $type->redisMode()) {
+            foreach ([self::SCRAPE, ...$this->channels] as $channel) {
+                $keys[] = $this->key('window:' . $channel);
             }
-
-            $redis->rename($key, $flushing);
         }
 
-        return $this->hash((array) $redis->hgetall($flushing));
+        $this->connection()->eval(self::RECORD, count($keys), ...$keys, ...[$field, $type->redisMode(), $value]);
     }
 
-    public function release(EStatPeriod $period, int $datum): void
-    {
-        $redis = $this->connection();
-        $key = $this->bucket($period, $datum);
-
-        $redis->del($key . ':flushing');
-        $redis->srem($this->pendingKey($period), $datum);
-
-        // Recorded after the claim: stored by the next run.
-        if ($redis->exists($key)) {
-            $redis->sadd($this->pendingKey($period), $datum);
-        }
-    }
-
-    public function peek(EStatPeriod $period, int $datum): array
-    {
-        $redis = $this->connection();
-        $key = $this->bucket($period, $datum);
-
-        return array_values(array_filter([
-            $this->hash((array) $redis->hgetall($key)),
-            $this->hash((array) $redis->hgetall($key . ':flushing')),
-        ]));
-    }
-
-    public function pullMemory(): array
+    public function scrape(): array
     {
         $result = (array) $this->connection()->eval(
-            self::PULL,
+            self::SCRAPE_SCRIPT,
             3,
-            $this->key('memory'),
-            $this->key('memory:totals'),
-            $this->key('memory:last'),
-            (string) EStatType::Min->value,
-            (string) EStatType::Max->value,
+            $this->key('window:' . self::SCRAPE),
+            $this->key('last:' . self::SCRAPE),
+            $this->key('totals'),
         );
 
-        return ['totals' => $this->hash((array) ($result[0] ?? [])), 'last' => $this->hash((array) ($result[1] ?? []))];
+        return ['totals' => $this->hash((array) ($result[0] ?? [])), 'extremes' => $this->hash((array) ($result[1] ?? []))];
     }
 
-    public function peekMemory(): array
+    public function peekScrape(): array
     {
         $redis = $this->connection();
 
         return [
-            'current' => $this->hash((array) $redis->hgetall($this->key('memory'))),
-            'totals' => $this->hash((array) $redis->hgetall($this->key('memory:totals'))),
-            'last' => $this->hash((array) $redis->hgetall($this->key('memory:last'))),
+            'totals' => $this->hash((array) $redis->hgetall($this->key('totals'))),
+            'extremes' => array_merge(
+                $this->hash((array) $redis->hgetall($this->key('last:' . self::SCRAPE))),
+                $this->hash((array) $redis->hgetall($this->key('window:' . self::SCRAPE))),
+            ),
         ];
     }
 
-    public function cachedMetric(string $identifier): ?string
+    public function take(string $channel, array $names = []): array
     {
-        $cached = $this->connection()->hget($this->key('metrics'), $identifier);
-
-        return is_string($cached) && '' !== $cached ? $cached : null;
+        return $this->changes($channel, $names, true);
     }
 
-    public function cacheMetric(string $identifier, string $value): void
+    public function peek(string $channel, array $names = []): array
     {
-        $this->connection()->hset($this->key('metrics'), $identifier, $value);
+        return $this->changes($channel, $names, false);
     }
 
-    /**
-     * A period's bucket key (without the connection's prefix).
-     */
-    public function bucket(EStatPeriod $period, int $datum): string
+    public function giveBack(string $channel, array $fields): void
     {
-        return $this->key($period->key() . ':' . $datum);
-    }
+        $arguments = [];
 
-    public function pendingKey(EStatPeriod $period): string
-    {
-        return $this->key('pending:' . $period->key());
+        foreach ($fields as $field => $value) {
+            $arguments[] = $field;
+            $arguments[] = $value;
+            $arguments[] = self::giveBackMode($field);
+        }
+
+        if ([] !== $arguments) {
+            $this->connection()->eval(self::GIVE_BACK, 2, $this->key('flushed:' . $channel), $this->key('window:' . $channel), ...$arguments);
+        }
     }
 
     public function key(string $name): string
     {
         return ($this->config['prefix'] ?? 'common-stats:') . $name;
+    }
+
+    /**
+     * @param  list<string>  $names
+     * @return array<string, string>
+     */
+    private function changes(string $channel, array $names, bool $take): array
+    {
+        return $this->hash((array) $this->connection()->eval(
+            self::TAKE,
+            3,
+            $this->key('totals'),
+            $this->key('flushed:' . $channel),
+            $this->key('window:' . $channel),
+            $take ? '1' : '0',
+            ...$names,
+        ));
     }
 
     /**

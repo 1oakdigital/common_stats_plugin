@@ -11,6 +11,4 @@ class ApiRequests extends CountStat
     protected string $description = 'API requests';
 
     protected array $labels = ['route'];
-
-    protected bool $memory = true;
 }

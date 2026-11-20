@@ -2,164 +2,132 @@
 
 namespace OneOakDigital\CommonStats\Tests;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Exceptions;
-use OneOakDigital\CommonStats\Contracts\StatsStore;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
-use OneOakDigital\CommonStats\Enums\EStatType;
+use InvalidArgumentException;
+use OneOakDigital\CommonStats\Data\StatChange;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\Models\StatsMetric;
-use OneOakDigital\CommonStats\Models\StatsValue;
-use OneOakDigital\CommonStats\Services\StatsFlusher;
+use OneOakDigital\CommonStats\Tests\Fixtures\ApiRequests;
 use OneOakDigital\CommonStats\Tests\Fixtures\CheckoutTime;
 use OneOakDigital\CommonStats\Tests\Fixtures\MessagesReceived;
+use OneOakDigital\CommonStats\Tests\Fixtures\Revenue;
 use OneOakDigital\CommonStats\Tests\Fixtures\Signups;
 use OneOakDigital\CommonStats\Tests\Fixtures\UploadSize;
 use PHPUnit\Framework\Attributes\DataProvider;
-use UnexpectedValueException;
+use RuntimeException;
 
 class FlushTest extends TestCase
 {
-    use RefreshDatabase;
-
-    /**
-     * Two batches of values recorded in the same minute and stored by two
-     * flushes, and the value then stored.
-     *
-     * @return array<string, array{EStatType, list<int|float>, list<int|float>, float}>
-     */
-    public static function mergeProvider(): array
-    {
-        return [
-            'count' => [EStatType::Count, [1, 2], [3], 6.0],
-            'sum' => [EStatType::Sum, [1.5, 2], [10], 13.5],
-            'average' => [EStatType::Average, [10, 20], [60], 30.0],
-            'min' => [EStatType::Min, [5, 3], [4], 3.0],
-            'max' => [EStatType::Max, [5, 3], [9], 9.0],
-        ];
-    }
-
     #[DataProvider('storeProvider')]
-    public function test_closed_minutes_are_stored_and_the_current_one_is_left(string $store): void
+    public function test_a_flush_hands_over_what_changed_since_the_previous_one(string $store): void
     {
         $this->useStore($store);
 
-        Carbon::setTestNow('2026-11-20 14:36:30');
         Signups::increment(by: 2);
-        Carbon::setTestNow('2026-11-20 14:37:10');
-        Signups::increment();
-
-        $this->assertSame(1, $this->flusher()->flush(EStatPeriod::Minute));
-
-        $this->assertSame([[202611201436, 2.0, 1]], $this->stored(EStatPeriod::Minute));
-        $this->assertSame([202611201437], $this->app->make(StatsStore::class)->pending(EStatPeriod::Minute));
-    }
-
-    public function test_hours_are_stored_from_the_hour_buckets(): void
-    {
-        Carbon::setTestNow('2026-11-20 13:05:00');
+        Revenue::add(10.5);
         CheckoutTime::record(100);
-        Carbon::setTestNow('2026-11-20 13:55:00');
         CheckoutTime::record(300);
-        Carbon::setTestNow('2026-11-20 14:01:00');
+        UploadSize::record(4);
+        UploadSize::record(9);
+        $first = $this->flush('minute');
 
-        $this->flusher()->flush(EStatPeriod::Hour);
+        Signups::increment();
+        CheckoutTime::record(50);
+        UploadSize::record(2);
+        $second = $this->flush('minute');
 
-        $this->assertSame([[202611201300, 200.0, 2]], $this->stored(EStatPeriod::Hour));
-        $this->assertSame([], $this->stored(EStatPeriod::Minute));
+        $this->assertSame([
+            'checkout.ms' => [200.0, 2, 400.0],
+            'revenue.eur' => [10.5, 1, 10.5],
+            'signup.completed' => [2.0, 1, 2.0],
+            'upload.mb' => [9.0, 2, 0.0],
+        ], $first);
+        $this->assertSame([
+            'checkout.ms' => [50.0, 1, 50.0],
+            'signup.completed' => [1.0, 1, 1.0],
+            'upload.mb' => [2.0, 1, 0.0],
+        ], $second);
+        $this->assertSame([], $this->flush('minute'));
     }
 
-    /**
-     * @param  list<int|float>  $first
-     * @param  list<int|float>  $second
-     */
-    #[DataProvider('mergeProvider')]
-    public function test_a_second_flush_of_the_same_minute_is_merged(EStatType $type, array $first, array $second, float $expected): void
+    #[DataProvider('storeProvider')]
+    public function test_each_channel_and_the_scrape_keep_their_own_account(string $store): void
     {
-        foreach ([$first, $second] as $batch) {
-            Carbon::setTestNow('2026-11-20 14:36:30');
+        $this->useStore($store);
 
-            foreach ($batch as $value) {
-                CommonStats::record('some.metric', $type, $value);
-            }
-
-            Carbon::setTestNow('2026-11-20 14:37:30');
-            $this->flusher()->flush(EStatPeriod::Minute);
-        }
-
-        $this->assertSame([[202611201436, $expected, count($first) + count($second)]], $this->stored(EStatPeriod::Minute));
-    }
-
-    public function test_metrics_are_created_once_with_their_name_labels_and_type(): void
-    {
-        foreach (['14:35:00', '14:36:00'] as $time) {
-            Carbon::setTestNow("2026-11-20 {$time}");
-            MessagesReceived::increment(['site' => 'dating1', 'result' => 'queued']);
-        }
-
-        Carbon::setTestNow('2026-11-20 14:37:00');
-        $this->flusher()->flush(EStatPeriod::Minute);
-
-        $metric = StatsMetric::query()->sole();
-        $this->assertSame('mailer.api.messages;result=queued;site=dating1', $metric->identifier);
-        $this->assertSame('mailer.api.messages', $metric->name);
-        $this->assertSame(['result' => 'queued', 'site' => 'dating1'], $metric->labels);
-        $this->assertSame(EStatType::Count, $metric->type_eid);
-        $this->assertCount(2, $metric->theValues);
-    }
-
-    public function test_values_recorded_with_another_type_than_the_metrics_are_reported_and_dropped(): void
-    {
-        Exceptions::fake();
-        Carbon::setTestNow('2026-11-20 14:35:00');
-        UploadSize::record(3);
-        Carbon::setTestNow('2026-11-20 14:36:00');
-        $this->flusher()->flush(EStatPeriod::Minute);
-        CommonStats::record('upload.mb', EStatType::Sum, 5);
-
-        Carbon::setTestNow('2026-11-20 14:37:00');
-        $this->flusher()->flush(EStatPeriod::Minute);
-
-        $this->assertSame([[202611201435, 3.0, 1]], $this->stored(EStatPeriod::Minute));
-        Exceptions::assertReported(UnexpectedValueException::class);
-    }
-
-    public function test_a_bucket_left_by_a_run_that_died_is_stored_first(): void
-    {
-        $store = $this->redisStore();
-        Carbon::setTestNow('2026-11-20 14:36:00');
         Signups::increment(by: 2);
-        // A run claimed the bucket, then died; then more was recorded.
-        $store->claim(EStatPeriod::Minute, 202611201436);
-        Signups::increment(by: 5);
+        UploadSize::record(9);
+        $this->flush('minute');
+        CommonStats::prometheus();
+        Signups::increment();
+        UploadSize::record(2);
 
-        Carbon::setTestNow('2026-11-20 14:37:00');
-        $this->flusher()->flush(EStatPeriod::Minute);
-        $this->assertSame([[202611201436, 2.0, 1]], $this->stored(EStatPeriod::Minute));
-
-        $this->flusher()->flush(EStatPeriod::Minute);
-        $this->assertSame([[202611201436, 7.0, 2]], $this->stored(EStatPeriod::Minute));
-        $this->assertSame([], $store->pending(EStatPeriod::Minute));
+        $this->assertSame(['signup.completed' => [1.0, 1, 1.0], 'upload.mb' => [2.0, 1, 0.0]], $this->flush('minute'));
+        $this->assertSame(['signup.completed' => [3.0, 2, 3.0], 'upload.mb' => [9.0, 2, 0.0]], $this->flush('hour'));
+        $this->assertSame(3.0, Signups::query()->memory()->sole()->value);
     }
 
-    private function flusher(): StatsFlusher
+    #[DataProvider('storeProvider')]
+    public function test_only_the_chosen_stats_are_flushed(string $store): void
     {
-        return $this->app->make(StatsFlusher::class);
+        $this->useStore($store);
+
+        Signups::increment();
+        ApiRequests::increment(['route' => 'a']);
+        MessagesReceived::increment(['site' => 'x', 'result' => 'queued']);
+
+        $this->assertSame(
+            ['mailer.api.messages;result=queued;site=x', 'signup.completed'],
+            array_keys($this->flush('minute', [Signups::class, 'mailer.api.messages'])),
+        );
+        $this->assertSame(['api.requests;route=a'], array_keys($this->flush('minute')));
+    }
+
+    #[DataProvider('storeProvider')]
+    public function test_the_changes_are_given_back_when_storing_them_fails(string $store): void
+    {
+        $this->useStore($store);
+
+        Signups::increment(by: 2);
+        UploadSize::record(9);
+        $this->flush('minute', [Signups::class]);
+        Signups::increment(by: 3);
+        UploadSize::record(4);
+
+        try {
+            CommonStats::flush('minute', [], fn (): never => throw new RuntimeException('database down'));
+            $this->fail('The exception was swallowed.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('database down', $exception->getMessage());
+        }
+
+        $this->assertSame(['signup.completed' => [3.0, 1, 3.0], 'upload.mb' => [9.0, 2, 0.0]], $this->flush('minute'));
+    }
+
+    public function test_an_unknown_channel_is_refused(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        CommonStats::flush('week', [], fn () => null);
     }
 
     /**
-     * The stored values of the period as [datum, value, samples].
+     * Flush the channel and summarize the changes as [value, samples, sum].
      *
-     * @return list<array{int, float, int}>
+     * @param  list<string>  $stats
+     * @return array<string, array{float, int, float}>
      */
-    private function stored(EStatPeriod $period): array
+    private function flush(string $channel, array $stats = []): array
     {
-        return StatsValue::query()
-            ->where('period_eid', $period)
-            ->orderBy('datum')
-            ->get()
-            ->map(fn (StatsValue $value): array => [$value->datum, round($value->value, 6), $value->samples])
-            ->all();
+        $summary = [];
+
+        CommonStats::flush($channel, $stats, function (array $changes) use (&$summary): void {
+            foreach ($changes as $change) {
+                /** @var StatChange $change */
+                $summary[$change->metric->identifier()] = [round($change->value, 6), $change->samples, round($change->sum, 6)];
+            }
+        });
+
+        ksort($summary);
+
+        return $summary;
     }
 }

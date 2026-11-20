@@ -2,13 +2,10 @@
 
 namespace OneOakDigital\CommonStats\Tests;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Exceptions;
 use InvalidArgumentException;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
+use OneOakDigital\CommonStats\Data\MemoryStat;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\Tests\Fixtures\ApiRequests;
 use OneOakDigital\CommonStats\Tests\Fixtures\CheckoutTime;
 use OneOakDigital\CommonStats\Tests\Fixtures\MessagesReceived;
 use OneOakDigital\CommonStats\Tests\Fixtures\QueueLag;
@@ -20,17 +17,8 @@ use Throwable;
 
 class RecordingTest extends TestCase
 {
-    use RefreshDatabase;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        Carbon::setTestNow('2026-11-20 14:37:12');
-    }
-
     #[DataProvider('storeProvider')]
-    public function test_each_type_is_aggregated_in_the_minute_and_the_hour(string $store): void
+    public function test_each_type_is_kept_in_memory(string $store): void
     {
         $this->useStore($store);
 
@@ -47,46 +35,13 @@ class RecordingTest extends TestCase
         UploadSize::record(12.5);
         UploadSize::record(4);
 
-        foreach ([[EStatPeriod::Minute, 202611201437], [EStatPeriod::Hour, 202611201400]] as [$period, $datum]) {
-            $values = [];
-
-            foreach ([Signups::class, Revenue::class, CheckoutTime::class, QueueLag::class, UploadSize::class] as $stat) {
-                $point = $stat::query()->{EStatPeriod::Minute === $period ? 'minutes' : 'hours'}()->get()->sole()->points[0];
-                $this->assertSame($datum, $point->datum);
-                $values[$stat::make()->name()] = [round($point->value, 6), $point->samples];
-            }
-
-            $this->assertSame([
-                'signup.completed' => [5.0, 2],
-                'revenue.eur' => [24.99, 2],
-                'checkout.ms' => [600.0, 2],
-                'queue.lag_s' => [3.0, 3],
-                'upload.mb' => [12.5, 3],
-            ], $values);
-        }
-    }
-
-    public function test_the_redis_buckets_expire_and_are_pending(): void
-    {
-        Signups::increment();
-
-        $store = $this->redisStore();
-
-        foreach ([[EStatPeriod::Minute, 202611201437], [EStatPeriod::Hour, 202611201400]] as [$period, $datum]) {
-            $this->assertSame([$datum], $store->pending($period));
-            $this->assertGreaterThan(47 * 3600, $this->redis()->ttl($store->bucket($period, $datum)));
-        }
-    }
-
-    #[DataProvider('storeProvider')]
-    public function test_a_memory_only_stat_is_not_in_the_periods(string $store): void
-    {
-        $this->useStore($store);
-
-        ApiRequests::increment(['route' => 'messages.store']);
-
-        $this->assertSame([], $this->app->make(\OneOakDigital\CommonStats\Contracts\StatsStore::class)->pending(EStatPeriod::Minute));
-        $this->assertCount(1, ApiRequests::query()->memory());
+        $this->assertSame([
+            'checkout.ms' => [600.0, 2, 1200.0],
+            'queue.lag_s' => [3.0, 3, 0.0],
+            'revenue.eur' => [24.99, 2, 24.99],
+            'signup.completed' => [5.0, 2, 5.0],
+            'upload.mb' => [12.5, 3, 0.0],
+        ], $this->summarize(CommonStats::memory()));
     }
 
     public function test_labels_must_be_the_declared_ones(): void
@@ -107,7 +62,7 @@ class RecordingTest extends TestCase
     {
         CommonStats::increment('signup.completed', 2);
 
-        $this->assertSame(2.0, Signups::query()->value()?->value);
+        $this->assertSame(2.0, Signups::query()->memory()->sole()->value);
     }
 
     public function test_a_store_failure_is_reported_not_thrown_when_failing_silently(): void
@@ -127,6 +82,23 @@ class RecordingTest extends TestCase
         $this->expectException(Throwable::class);
 
         Signups::increment();
+    }
+
+    /**
+     * @param  iterable<MemoryStat>  $stats
+     * @return array<string, array{float, int, float}>
+     */
+    private function summarize(iterable $stats): array
+    {
+        $summary = [];
+
+        foreach ($stats as $stat) {
+            $summary[$stat->metric->identifier()] = [round($stat->value, 6), $stat->samples, round($stat->sum, 6)];
+        }
+
+        ksort($summary);
+
+        return $summary;
     }
 
     /**

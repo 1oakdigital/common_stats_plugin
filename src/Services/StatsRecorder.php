@@ -2,19 +2,16 @@
 
 namespace OneOakDigital\CommonStats\Services;
 
-use Carbon\CarbonImmutable;
 use InvalidArgumentException;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Data\Metric;
-use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
 use Throwable;
 
 /**
- * Records metric values in the store (Redis), aggregated per minute and per
- * hour for FlushMinuteStats / FlushHourStats to store in stats_values, or,
- * with $memory, only in memory until they are read (StatsReader::pull(),
- * e.g. by a Prometheus endpoint). Never touches the database.
+ * Records metric values in the store (Redis): running totals, and min / max
+ * windows. Never touches the database; the application stores what it
+ * wants with StatsFlusher.
  */
 class StatsRecorder
 {
@@ -25,21 +22,20 @@ class StatsRecorder
      *
      * @param  array<string, string|int|float|bool>  $labels
      */
-    public function increment(string $metric, int $by = 1, array $labels = [], bool $memory = false): void
+    public function increment(string $metric, int $by = 1, array $labels = []): void
     {
-        $this->record($metric, EStatType::Count, $by, $labels, $memory);
+        $this->record($metric, EStatType::Count, $by, $labels);
     }
 
     /**
-     * Record a value of the metric: in the current minute and hour, or, with
-     * $memory, only in memory. A store failure is reported, not thrown,
-     * unless common-stats.fail_silently is off.
+     * Record a value of the metric. A store failure is reported, not
+     * thrown, unless common-stats.fail_silently is off.
      *
      * @param  array<string, string|int|float|bool>  $labels
      *
      * @throws InvalidArgumentException when the metric, a label or the value is invalid
      */
-    public function record(string $metric, EStatType $type, int|float $value, array $labels = [], bool $memory = false): void
+    public function record(string $metric, EStatType $type, int|float $value, array $labels = []): void
     {
         $identifier = Metric::make($metric, $labels)->identifier();
 
@@ -47,17 +43,8 @@ class StatsRecorder
             throw new InvalidArgumentException("Invalid value for metric [{$identifier}]: it must be a finite number.");
         }
 
-        $now = CarbonImmutable::now();
-
         try {
-            $this->store->record(
-                $type->value . '|' . $identifier,
-                $type,
-                (string) $value,
-                EStatPeriod::Minute->datum($now),
-                EStatPeriod::Hour->datum($now),
-                $memory,
-            );
+            $this->store->record($type->value . '|' . $identifier, $type, (string) $value);
         } catch (Throwable $exception) {
             if ( ! $this->failSilently) {
                 throw $exception;
