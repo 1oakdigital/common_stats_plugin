@@ -8,6 +8,10 @@ use Illuminate\Support\ServiceProvider;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Jobs\FlushHourStats;
 use OneOakDigital\CommonStats\Jobs\FlushMinuteStats;
+use OneOakDigital\CommonStats\Services\StatsManager;
+use OneOakDigital\CommonStats\Services\StatsMetrics;
+use OneOakDigital\CommonStats\Services\StatsReader;
+use OneOakDigital\CommonStats\Services\StatsRecorder;
 use OneOakDigital\CommonStats\Stores\ArrayStore;
 use OneOakDigital\CommonStats\Stores\RedisStore;
 

@@ -7,10 +7,10 @@ use Illuminate\Support\Facades\Redis;
 use OneOakDigital\CommonStats\CommonStatsServiceProvider;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\StatsManager;
-use OneOakDigital\CommonStats\StatsMetrics;
-use OneOakDigital\CommonStats\StatsReader;
-use OneOakDigital\CommonStats\StatsRecorder;
+use OneOakDigital\CommonStats\Services\StatsManager;
+use OneOakDigital\CommonStats\Services\StatsMetrics;
+use OneOakDigital\CommonStats\Services\StatsReader;
+use OneOakDigital\CommonStats\Services\StatsRecorder;
 use OneOakDigital\CommonStats\Stores\RedisStore;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 

@@ -1,9 +1,11 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Services;
 
 use OneOakDigital\CommonStats\Data\MemoryStat;
 use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Exporters\PrometheusExporter;
+use OneOakDigital\CommonStats\Query\StatsQuery;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**

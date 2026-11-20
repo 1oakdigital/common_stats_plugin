@@ -3,7 +3,6 @@
 namespace OneOakDigital\CommonStats\Data;
 
 use OneOakDigital\CommonStats\Enums\EStatType;
-use OneOakDigital\CommonStats\Metric;
 
 /**
  * A memory-only metric as of a read.

@@ -11,7 +11,7 @@ use OneOakDigital\CommonStats\Enums\EStatType;
 use OneOakDigital\CommonStats\Facades\CommonStats;
 use OneOakDigital\CommonStats\Models\StatsMetric;
 use OneOakDigital\CommonStats\Models\StatsValue;
-use OneOakDigital\CommonStats\StatsFlusher;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 use OneOakDigital\CommonStats\Tests\Fixtures\CheckoutTime;
 use OneOakDigital\CommonStats\Tests\Fixtures\MessagesReceived;
 use OneOakDigital\CommonStats\Tests\Fixtures\Signups;

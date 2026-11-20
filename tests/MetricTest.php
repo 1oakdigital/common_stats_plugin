@@ -3,7 +3,7 @@
 namespace OneOakDigital\CommonStats\Tests;
 
 use InvalidArgumentException;
-use OneOakDigital\CommonStats\Metric;
+use OneOakDigital\CommonStats\Data\Metric;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 

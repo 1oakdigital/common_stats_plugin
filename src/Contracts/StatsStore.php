@@ -4,6 +4,8 @@ namespace OneOakDigital\CommonStats\Contracts;
 
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Stores\ArrayStore;
+use OneOakDigital\CommonStats\Stores\RedisStore;
 
 /**
  * Where values are aggregated before they are stored: Redis (RedisStore),

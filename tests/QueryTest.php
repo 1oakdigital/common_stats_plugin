@@ -8,7 +8,7 @@ use LogicException;
 use OneOakDigital\CommonStats\Data\StatsSeries;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Facades\CommonStats;
-use OneOakDigital\CommonStats\StatsFlusher;
+use OneOakDigital\CommonStats\Services\StatsFlusher;
 use OneOakDigital\CommonStats\Tests\Fixtures\ApiRequests;
 use OneOakDigital\CommonStats\Tests\Fixtures\CheckoutTime;
 use OneOakDigital\CommonStats\Tests\Fixtures\MessagesReceived;

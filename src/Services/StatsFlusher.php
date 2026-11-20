@@ -1,6 +1,6 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Services;
 
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;

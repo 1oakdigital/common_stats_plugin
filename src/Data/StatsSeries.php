@@ -3,7 +3,6 @@
 namespace OneOakDigital\CommonStats\Data;
 
 use OneOakDigital\CommonStats\Enums\EStatType;
-use OneOakDigital\CommonStats\Metric;
 
 /**
  * One label combination of a stat and its values per period, oldest first.

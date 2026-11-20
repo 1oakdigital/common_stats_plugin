@@ -1,6 +1,6 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Query;
 
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -9,13 +9,17 @@ use LogicException;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
 use OneOakDigital\CommonStats\Data\Aggregate;
 use OneOakDigital\CommonStats\Data\MemoryStat;
+use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Data\StatsPoint;
 use OneOakDigital\CommonStats\Data\StatsSeries;
 use OneOakDigital\CommonStats\Data\StatsTotal;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Facades\CommonStats;
 use OneOakDigital\CommonStats\Models\StatsMetric;
 use OneOakDigital\CommonStats\Models\StatsValue;
+use OneOakDigital\CommonStats\Services\StatsMetrics;
+use OneOakDigital\CommonStats\Services\StatsReader;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**

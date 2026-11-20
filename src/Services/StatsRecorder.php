@@ -1,10 +1,11 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Services;
 
 use Carbon\CarbonImmutable;
 use InvalidArgumentException;
 use OneOakDigital\CommonStats\Contracts\StatsStore;
+use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatPeriod;
 use OneOakDigital\CommonStats\Enums\EStatType;
 use Throwable;

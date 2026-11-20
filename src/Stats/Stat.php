@@ -3,10 +3,11 @@
 namespace OneOakDigital\CommonStats\Stats;
 
 use InvalidArgumentException;
+use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatType;
-use OneOakDigital\CommonStats\Metric;
-use OneOakDigital\CommonStats\StatsQuery;
-use OneOakDigital\CommonStats\StatsRecorder;
+use OneOakDigital\CommonStats\Query\StatsQuery;
+use OneOakDigital\CommonStats\Services\StatsReader;
+use OneOakDigital\CommonStats\Services\StatsRecorder;
 
 /**
  * A metric the application collects, declared as a class: its name, labels,

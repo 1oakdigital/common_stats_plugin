@@ -1,6 +1,6 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Data;
 
 use InvalidArgumentException;
 

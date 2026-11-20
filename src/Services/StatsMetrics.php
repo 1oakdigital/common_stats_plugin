@@ -1,8 +1,9 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Services;
 
 use OneOakDigital\CommonStats\Contracts\StatsStore;
+use OneOakDigital\CommonStats\Data\Metric;
 use OneOakDigital\CommonStats\Enums\EStatType;
 use OneOakDigital\CommonStats\Models\StatsMetric;
 

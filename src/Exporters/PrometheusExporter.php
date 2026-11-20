@@ -1,9 +1,10 @@
 <?php
 
-namespace OneOakDigital\CommonStats;
+namespace OneOakDigital\CommonStats\Exporters;
 
 use OneOakDigital\CommonStats\Data\MemoryStat;
 use OneOakDigital\CommonStats\Enums\EStatType;
+use OneOakDigital\CommonStats\Services\StatsReader;
 use OneOakDigital\CommonStats\Stats\Stat;
 
 /**
